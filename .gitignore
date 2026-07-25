@@ -12,6 +12,9 @@ __pycache__/
 .venv/
 .pytest_cache/
 
+# Editor-local preferences
+.vscode/
+
 # Backtesting data and output — regenerable, and large.
 # Leading slash matters: a bare `data/` would also swallow backtester/data/,
 # silently dropping the whole storage layer from every commit.

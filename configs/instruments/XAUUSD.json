@@ -1,0 +1,15 @@
+{
+  "symbol": "XAUUSD",
+  "digits": 2,
+  "contract_size": 100.0,
+  "tick_size": 0.01,
+  "tick_value": 1.0,
+  "min_volume": 0.01,
+  "max_volume": 100.0,
+  "volume_step": 0.01,
+  "spread_points": 26.0,
+  "commission_per_lot": 0.0,
+  "swap_long": -12.6,
+  "swap_short": -4.6,
+  "currency": "USD"
+}

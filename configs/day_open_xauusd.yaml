@@ -11,7 +11,11 @@ timeframe: M15
 data: parquet://data/bars
 
 start: 2022-01-01
-end: 2024-12-31
+# end: 2024-12-31   # uncommented, this holds 2025+ back as out-of-sample data.
+#
+# The run will actually start 2022-04-26, not 2022-01-01: the terminal caps
+# history at 100,000 bars (Tools > Options > Charts > "Max bars in chart"), and
+# that is where M15 runs out. H1 and D1 do reach 2022-01-03. Not a data error.
 
 params:
   volume: 0.1            # "BUY X" — X in lots; 0.1 lot of XAUUSD = 10 oz

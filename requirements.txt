@@ -14,7 +14,11 @@ PyYAML>=6.0
 # Tests
 pytest>=7.4
 
-# Optional, for ad-hoc analysis of runs/*/trades.csv
+# Ad-hoc analysis: SQL straight against the Parquet store, no import step.
+# Note it renders timestamps in the session timezone — `SET TimeZone='UTC';`
+# first, or the day boundary will not be where you think it is.
+duckdb>=0.10
+
+# Optional, for poking at runs/*/trades.csv
 # pandas>=2.0
-# duckdb>=0.10
 # matplotlib>=3.8
