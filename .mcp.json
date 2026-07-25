@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mt5": {
+      "command": "${HOME}/Documents/trading/mt5-mcp-server/run-server.sh",
+      "args": [],
+      "env": {
+        "WINEPREFIX": "${HOME}/.mt5"
+      }
+    }
+  }
+}

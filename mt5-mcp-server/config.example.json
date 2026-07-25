@@ -1,0 +1,8 @@
+{
+    "mt5_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
+    "login": null,
+    "password": null,
+    "server": null,
+    "timeout": 60,
+    "read_only": false
+}

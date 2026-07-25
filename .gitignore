@@ -1,0 +1,12 @@
+# Credentials — never commit these
+mt5-mcp-server/config.json
+strategy.txt
+
+# Installers and downloads
+*.exe
+wget-log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
