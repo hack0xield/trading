@@ -1,0 +1,20 @@
+# The engine itself needs nothing beyond the standard library.
+# Everything below is for a storage backend or the tooling around a run.
+
+# Parquet store (the default) — recommended
+pyarrow>=14.0
+
+# SQL store: PostgreSQL, SQLite, TimescaleDB, ...
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9   # PostgreSQL driver; drop it if you only use SQLite
+
+# YAML run configs (JSON works without it)
+PyYAML>=6.0
+
+# Tests
+pytest>=7.4
+
+# Optional, for ad-hoc analysis of runs/*/trades.csv
+# pandas>=2.0
+# duckdb>=0.10
+# matplotlib>=3.8

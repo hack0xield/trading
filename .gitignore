@@ -10,3 +10,13 @@ wget-log
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
+
+# Backtesting data and output — regenerable, and large.
+# Leading slash matters: a bare `data/` would also swallow backtester/data/,
+# silently dropping the whole storage layer from every commit.
+/data/
+/runs/
+*.parquet
+*.db
+*.sqlite3

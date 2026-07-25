@@ -1,0 +1,43 @@
+# The mock strategy from strategy.txt, as a reproducible run.
+#
+#   scripts/run_backtest.py --config configs/day_open_xauusd.yaml --save
+#
+# Every value here can be overridden on the command line, so this file holds
+# the stable part of the setup and the shell varies whatever is under test.
+
+strategy: day_open
+symbol: XAUUSD
+timeframe: M15
+data: parquet://data/bars
+
+start: 2022-01-01
+end: 2024-12-31
+
+params:
+  volume: 0.1            # "BUY X" — X in lots; 0.1 lot of XAUUSD = 10 oz
+  direction: BUY
+  stop_pct: 2.0          # stop 2% below the fill
+  take_pct: 2.0          # target 2% above the fill
+  session_tz: UTC        # where the day boundary sits; see the note below
+  session_start_hour: 0
+  one_position: true     # never stack two days' positions
+  close_at_day_end: false # the brief lists no time exit: hold until stop or take.
+                          # Setting this true flattens at each day boundary
+                          # instead, which mostly pre-empts the 2% brackets.
+  weekdays: "0,1,2,3,4"  # Mon-Fri; gold has no Saturday session anyway
+
+execution:
+  initial_balance: 10000
+  leverage: 100
+  # spread_points: 25    # uncomment to force a spread; otherwise each bar's own
+  slippage_points: 0
+  commission_per_lot: 0  # per side; set this to what your broker charges
+  apply_swap: true
+  intrabar: conservative # when a bar holds both the stop and the target, the
+                         # stop is assumed to have come first
+
+# Bar timestamps from MT5 are broker-server time (commonly UTC+2/+3), not UTC.
+# `session_tz: UTC` therefore starts the day at the broker's midnight. To align
+# with, say, New York, first work out your broker's offset and set session_tz
+# to something like "UTC-7" relative to it. Getting this wrong shifts every
+# entry by hours, so it is worth checking against a chart once.
