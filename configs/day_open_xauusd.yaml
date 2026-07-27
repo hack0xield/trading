@@ -31,7 +31,7 @@ params:
   weekdays: "0,1,2,3,4"  # Mon-Fri; gold has no Saturday session anyway
 
 execution:
-  initial_balance: 10000
+  initial_balance: 100000
   leverage: 100
   # spread_points: 25    # uncomment to force a spread; otherwise each bar's own
   slippage_points: 0
