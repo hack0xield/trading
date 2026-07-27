@@ -1,0 +1,547 @@
+<meta charset="utf-8">
+<title>__TITLE__</title>
+
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --win: #2a78d6;
+    --loss: #e34948;
+    --price: #52514e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --win: #3987e5;
+      --loss: #e66767;
+      --price: #c3c2b7;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --win: #3987e5;
+    --loss: #e66767;
+    --price: #c3c2b7;
+  }
+
+  .viz-root {
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 28px 20px 48px;
+    margin: 0;
+    min-height: 100vh;
+    box-sizing: border-box;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 22px; }
+  .sub code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: var(--text-secondary);
+  }
+
+  /* ---- stats ---- */
+  .stats { display: flex; flex-wrap: wrap; gap: 28px; margin-bottom: 22px; align-items: flex-end; }
+  .hero .label, .tile .label {
+    color: var(--text-secondary); font-size: 12px; margin-bottom: 2px;
+  }
+  .hero .value { font-size: 48px; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
+  .tile .value { font-size: 20px; font-weight: 600; }
+  .up { color: var(--win); }
+  .down { color: var(--loss); }
+
+  /* ---- controls: one row, above everything it scopes ---- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+    padding: 12px 14px; margin-bottom: 14px;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .ctl { display: flex; align-items: center; gap: 8px; }
+  .ctl > span { color: var(--text-secondary); font-size: 12px; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .seg button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    font: inherit; font-size: 12px; color: var(--text-secondary);
+    padding: 5px 11px; min-height: 30px;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button:hover { background: var(--plane); }
+  .seg button[aria-pressed="true"] { background: var(--plane); color: var(--text-primary); font-weight: 600; }
+  .seg button:focus-visible { outline: 2px solid var(--win); outline-offset: -2px; }
+
+  /* ---- chart ---- */
+  .chart {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 0 10px 0; margin-bottom: 12px;
+  }
+  .chart-row { display: flex; align-items: flex-start; }
+  .yaxis { flex: 0 0 auto; }
+  .scroller { overflow-x: auto; overflow-y: hidden; flex: 1 1 auto; position: relative; cursor: crosshair; }
+  .scroller:focus-visible { outline: 2px solid var(--win); outline-offset: -2px; }
+  /* The track is the full width of the series and drives the scrollbar; the
+     SVG sticks to the left edge and only ever draws the visible slice, so the
+     document never carries a 50,000px node. */
+  .track { position: relative; }
+  #plot { position: sticky; left: 0; display: block; }
+  .hint { color: var(--muted); font-size: 11px; padding: 6px 14px 0 70px; }
+
+  .tooltip {
+    position: fixed; z-index: 10; pointer-events: none;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; font-size: 12px; min-width: 168px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.13); opacity: 0; transition: opacity .08s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tooltip { transition: none; }
+    * { scroll-behavior: auto !important; }
+  }
+  .tooltip .t-date { color: var(--text-secondary); font-size: 11px; margin-bottom: 5px; }
+  .tooltip .t-row { display: flex; align-items: baseline; gap: 7px; margin-top: 3px; }
+  .tooltip .t-key { width: 14px; height: 2px; border-radius: 1px; flex: 0 0 auto; position: relative; top: -3px; }
+  .tooltip .t-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tooltip .t-lab { color: var(--text-secondary); font-size: 11px; }
+  .tooltip hr { border: 0; border-top: 1px solid var(--border); margin: 7px 0 5px; }
+
+  /* ---- legend: identity is never colour alone ---- */
+  .legend { display: flex; flex-wrap: wrap; gap: 20px; padding: 2px 4px 0 70px; }
+  .legend .item { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; }
+  .legend .swatch { width: 15px; height: 2px; border-radius: 1px; }
+  .legend .glyph { font-size: 11px; line-height: 1; }
+
+  /* ---- table view ---- */
+  details {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; margin-top: 18px;
+  }
+  summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+  summary:focus-visible { outline: 2px solid var(--win); outline-offset: 2px; }
+  .table-scroll { overflow-x: auto; max-height: 460px; overflow-y: auto; margin-top: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: right; padding: 5px 9px; white-space: nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  thead th {
+    position: sticky; top: 0; background: var(--surface-1);
+    color: var(--text-secondary); font-weight: 600;
+    border-bottom: 1px solid var(--axis); z-index: 1;
+  }
+  tbody td { border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  tbody tr:hover { background: var(--plane); }
+  .foot { color: var(--muted); font-size: 11px; margin-top: 20px; }
+</style>
+
+<div class="viz-root">
+<div class="wrap">
+  <h1 id="title">Backtest trades on price</h1>
+  <p class="sub" id="subtitle"></p>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="controls">
+    <div class="ctl">
+      <span>Zoom</span>
+      <div class="seg" id="zoom" role="group" aria-label="Zoom level"></div>
+    </div>
+    <div class="ctl">
+      <span>Show</span>
+      <div class="seg" id="filter" role="group" aria-label="Filter trades"></div>
+    </div>
+    <div class="ctl">
+      <span>Price scale</span>
+      <div class="seg" id="scale" role="group" aria-label="Price scale"></div>
+    </div>
+    <div class="ctl">
+      <span id="count"></span>
+    </div>
+  </div>
+
+  <div class="chart">
+    <div class="chart-row">
+      <svg class="yaxis" id="yaxis" aria-hidden="true"></svg>
+      <div class="scroller" id="scroller" tabindex="0" role="img" aria-label="Price chart with trade markers">
+        <div class="track" id="track"><svg id="plot"></svg></div>
+      </div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <p class="hint">Scroll sideways to move through time · hover for details · arrow keys pan when focused</p>
+  </div>
+
+  <details>
+    <summary>Table view — every trade</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Side</th><th>Entry</th><th>Price in</th>
+            <th>Exit</th><th>Price out</th><th>Net P&amp;L</th><th>Bars</th><th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <p class="foot" id="foot"></p>
+</div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+
+const PLOT_H = 430, XAXIS_H = 26, YAXIS_W = 66, PAD = 14;
+const state = { px: 4, filter: "all", scale: "fit" };
+const N = DATA.close.length;
+
+const $ = (id) => document.getElementById(id);
+const SVG = "http://www.w3.org/2000/svg";
+const el = (name, attrs) => {
+  const n = document.createElementNS(SVG, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+};
+const money = (v) => (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+const price = (v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const dt = (s) => new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ");
+const day = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+
+// ---- scale ------------------------------------------------------------
+// Gold ran 1,600 -> 5,600 over this period, so a single global y-scale
+// squeezes any two-month window into a few pixels of height and the trades
+// become unreadable. "Fit" rescales to whatever is on screen, the way a
+// trading chart does; "Full" restores the fixed scale for honest comparison
+// between distant windows, since under Fit equal heights are NOT equal moves.
+let gLo = Infinity, gHi = -Infinity;
+for (let i = 0; i < N; i++) {
+  if (DATA.low[i] < gLo) gLo = DATA.low[i];
+  if (DATA.high[i] > gHi) gHi = DATA.high[i];
+}
+{ const s = gHi - gLo; gLo -= s * 0.04; gHi += s * 0.04; }
+
+const view = { i0: 0, i1: 0, lo: gLo, hi: gHi, left: 0, w: 0 };
+const y = (p) => PAD + (view.hi - p) / (view.hi - view.lo) * (PLOT_H - 2 * PAD);
+const x = (i) => i * state.px - view.left + state.px / 2;
+
+function measure() {
+  const sc = $("scroller");
+  view.w = sc.clientWidth || 900;
+  view.left = sc.scrollLeft;
+  view.i0 = Math.max(0, Math.floor(view.left / state.px) - 1);
+  view.i1 = Math.min(N - 1, Math.ceil((view.left + view.w) / state.px) + 1);
+
+  if (state.scale === "full") { view.lo = gLo; view.hi = gHi; return; }
+  let lo = Infinity, hi = -Infinity;
+  for (let i = view.i0; i <= view.i1; i++) {
+    if (DATA.low[i] < lo) lo = DATA.low[i];
+    if (DATA.high[i] > hi) hi = DATA.high[i];
+  }
+  // Keep a visible trade's markers inside the plot even if its stop sat below
+  // every low on screen.
+  for (const t of shown()) {
+    if (t.i1 < view.i0 || t.i0 > view.i1) continue;
+    lo = Math.min(lo, t.p0, t.p1); hi = Math.max(hi, t.p0, t.p1);
+  }
+  if (!isFinite(lo)) { lo = gLo; hi = gHi; }
+  const s = (hi - lo) || 1;
+  view.lo = lo - s * 0.08; view.hi = hi + s * 0.08;
+}
+
+function ticks(min, max, n) {
+  const raw = (max - min) / n;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(min / step) * step; v <= max; v += step) out.push(v);
+  return out;
+}
+
+// ---- header -----------------------------------------------------------
+const s = DATA.stats;
+$("title").textContent = `${DATA.symbol} — ${DATA.trades.length} trades from the ${DATA.strategy} strategy`;
+const p = DATA.params;
+$("subtitle").innerHTML = "";
+$("subtitle").append(
+  `${day(DATA.times[0])} to ${day(DATA.times[DATA.times.length - 1])} · `,
+  `price drawn at ${DATA.shownTf}, strategy ran on ${DATA.sourceTf} · `,
+);
+const codeEl = document.createElement("code");
+codeEl.textContent = Object.entries(p).map(([k, v]) => `${k}=${v}`).join(" ");
+$("subtitle").append(codeEl);
+
+const pos = s.net_profit >= 0;
+$("stats").innerHTML = "";
+const hero = document.createElement("div");
+hero.className = "hero";
+const hl = document.createElement("div"); hl.className = "label"; hl.textContent = "Net profit";
+const hv = document.createElement("div"); hv.className = "value " + (pos ? "up" : "down");
+hv.textContent = (pos ? "+" : "") + money(s.net_profit);
+hero.append(hl, hv);
+$("stats").append(hero);
+for (const [label, value] of [
+  ["Return", (s.return_pct >= 0 ? "+" : "") + s.return_pct.toFixed(1) + "%"],
+  ["Trades", String(s.trades)],
+  ["Win rate", s.win_rate_pct.toFixed(1) + "%"],
+  ["Max drawdown", s.max_drawdown_pct.toFixed(1) + "%"],
+]) {
+  const t = document.createElement("div"); t.className = "tile";
+  const a = document.createElement("div"); a.className = "label"; a.textContent = label;
+  const b = document.createElement("div"); b.className = "value"; b.textContent = value;
+  t.append(a, b); $("stats").append(t);
+}
+
+// ---- legend -----------------------------------------------------------
+for (const [color, glyph, text] of [
+  ["var(--price)", "", `${DATA.symbol} price (${DATA.shownTf} close)`],
+  ["var(--win)", "▲", "Winning trade — entry ● to exit ▲"],
+  ["var(--loss)", "▼", "Losing trade — entry ● to exit ▼"],
+]) {
+  const item = document.createElement("div"); item.className = "item";
+  const sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = color;
+  item.append(sw);
+  if (glyph) {
+    const g = document.createElement("span"); g.className = "glyph"; g.style.color = color; g.textContent = glyph;
+    item.append(g);
+  }
+  const lab = document.createElement("span"); lab.textContent = text;
+  item.append(lab); $("legend").append(item);
+}
+
+// ---- controls ---------------------------------------------------------
+function seg(host, options, current, onPick) {
+  host.innerHTML = "";
+  for (const [value, label] of options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(value === current));
+    b.onclick = () => onPick(value);
+    host.append(b);
+  }
+}
+function controls() {
+  seg($("zoom"), [[2, "Far"], [4, "Mid"], [8, "Close"]], state.px, (v) => {
+    // Keep the centre of the view put across a zoom change.
+    const sc = $("scroller");
+    const mid = (sc.scrollLeft + sc.clientWidth / 2) / state.px;
+    state.px = v;
+    layout();
+    sc.scrollLeft = mid * v - sc.clientWidth / 2;
+    draw();
+  });
+  seg($("filter"), [["all", "All"], ["win", "Wins"], ["loss", "Losses"]], state.filter,
+    (v) => { state.filter = v; draw(); });
+  seg($("scale"), [["fit", "Fit visible"], ["full", "Full range"]], state.scale,
+    (v) => { state.scale = v; draw(); });
+}
+
+const shown = () => DATA.trades.filter((t) =>
+  state.filter === "all" || (state.filter === "win" ? t.pnl > 0 : t.pnl <= 0));
+
+// ---- render -----------------------------------------------------------
+function layout() {
+  const H = PLOT_H + XAXIS_H;
+  const track = $("track");
+  track.style.width = (N * state.px) + "px";
+  track.style.height = H + "px";
+  $("plot").setAttribute("height", H);
+  const ya = $("yaxis");
+  ya.setAttribute("width", YAXIS_W);
+  ya.setAttribute("height", H);
+}
+
+function draw() {
+  controls();
+  measure();
+  const W = view.w;
+  const plot = $("plot");
+  plot.setAttribute("width", W);
+  plot.innerHTML = "";
+  const ya = $("yaxis");
+  ya.innerHTML = "";
+
+  for (const v of ticks(view.lo, view.hi, 6)) {
+    const yy = y(v);
+    if (yy < 6 || yy > PLOT_H - 4) continue;
+    plot.append(el("line", { x1: 0, y1: yy, x2: W, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const lab = el("text", {
+      x: YAXIS_W - 10, y: yy + 4, "text-anchor": "end",
+      fill: "var(--muted)", "font-size": 11, "font-family": "system-ui, sans-serif",
+    });
+    lab.style.fontVariantNumeric = "tabular-nums";
+    lab.textContent = v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+    ya.append(lab);
+  }
+  ya.append(el("line", { x1: YAXIS_W - 1, y1: 0, x2: YAXIS_W - 1, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  // Only the visible slice is ever drawn, so zoom and length cost nothing.
+  const a = view.i0, b = view.i1;
+  let up = "", down = "";
+  for (let i = a; i <= b; i++) up += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.high[i]).toFixed(1);
+  for (let i = b; i >= a; i--) down += "L" + x(i).toFixed(1) + "," + y(DATA.low[i]).toFixed(1);
+  plot.append(el("path", { d: up + down + "Z", fill: "var(--price)", "fill-opacity": 0.10, stroke: "none" }));
+
+  let line = "";
+  for (let i = a; i <= b; i++) line += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.close[i]).toFixed(1);
+  plot.append(el("path", {
+    d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
+    "stroke-linejoin": "round", "stroke-linecap": "round",
+  }));
+
+  // X axis: real dates on an ordinal axis, one tick per month boundary.
+  let lastMonth = a > 0 ? new Date(DATA.times[a - 1] * 1000).toISOString().slice(0, 7) : "";
+  for (let i = a; i <= b; i++) {
+    const m = new Date(DATA.times[i] * 1000).toISOString().slice(0, 7);
+    if (m === lastMonth) continue;
+    lastMonth = m;
+    const xx = x(i);
+    plot.append(el("line", { x1: xx, y1: PLOT_H, x2: xx, y2: PLOT_H + 4, stroke: "var(--axis)", "stroke-width": 1 }));
+    const isYear = m.endsWith("-01");
+    const t = el("text", {
+      x: xx + 4, y: PLOT_H + 17, fill: "var(--muted)",
+      "font-size": 11, "font-family": "system-ui, sans-serif",
+    });
+    t.textContent = isYear ? m.slice(0, 4) : m.slice(5);
+    if (isYear) t.setAttribute("font-weight", "600");
+    plot.append(t);
+  }
+  plot.append(el("line", { x1: 0, y1: PLOT_H, x2: W, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  // Trades. Colour says outcome; marker shape says it a second time.
+  const list = shown();
+  let drawn = 0;
+  for (const t of list) {
+    if (t.i1 < a || t.i0 > b) continue;
+    drawn++;
+    const c = t.pnl > 0 ? "var(--win)" : "var(--loss)";
+    const x0 = x(t.i0), x1 = x(t.i1), y0 = y(t.p0), y1 = y(t.p1);
+    plot.append(el("line", {
+      x1: x0, y1: y0, x2: x1, y2: y1, stroke: c, "stroke-width": 2,
+      "stroke-linecap": "round", "stroke-opacity": 0.85,
+    }));
+    // 2px surface ring keeps markers legible where they cross the price line.
+    plot.append(el("circle", { cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2 }));
+    const d = t.pnl > 0
+      ? `M${x1},${y1 - 5.5} L${x1 + 5},${y1 + 4} L${x1 - 5},${y1 + 4} Z`
+      : `M${x1},${y1 + 5.5} L${x1 + 5},${y1 - 4} L${x1 - 5},${y1 - 4} Z`;
+    plot.append(el("path", { d, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round" }));
+  }
+
+  crosshair = el("line", {
+    x1: 0, y1: 0, x2: 0, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden",
+  });
+  plot.append(crosshair);
+
+  const wins = list.filter((t) => t.pnl > 0).length;
+  $("count").textContent =
+    `${drawn} on screen · ${list.length} of ${DATA.trades.length} total · ${wins} up, ${list.length - wins} down`;
+  buildTable(list);
+}
+
+let queued = false;
+function schedule() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(); });
+}
+$("scroller").addEventListener("scroll", schedule, { passive: true });
+window.addEventListener("resize", schedule);
+
+// ---- table view -------------------------------------------------------
+function buildTable(list) {
+  const tb = $("tbody");
+  tb.innerHTML = "";
+  for (const t of list) {
+    const tr = document.createElement("tr");
+    for (const [text, cls] of [
+      [String(t.id), ""], [t.side, ""], [dt(t.t0), ""], [price(t.p0), ""],
+      [dt(t.t1), ""], [price(t.p1), ""],
+      [(t.pnl >= 0 ? "+" : "") + t.pnl.toFixed(2), t.pnl > 0 ? "up" : "down"],
+      [String(t.bars), ""], [t.reason.replace("_", " ").toLowerCase(), ""],
+    ]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.append(td);
+    }
+    tb.append(tr);
+  }
+}
+
+// ---- hover: crosshair finds the X, one tooltip lists everything there ----
+let crosshair = null;
+const tip = document.createElement("div");
+tip.className = "tooltip";
+document.body.append(tip);
+
+function row(color, value, label) {
+  const r = document.createElement("div"); r.className = "t-row";
+  if (color) { const k = document.createElement("span"); k.className = "t-key"; k.style.background = color; r.append(k); }
+  const v = document.createElement("span"); v.className = "t-val"; v.textContent = value;
+  const l = document.createElement("span"); l.className = "t-lab"; l.textContent = label;
+  r.append(v, l);
+  return r;
+}
+
+$("scroller").addEventListener("pointermove", (ev) => {
+  const box = $("plot").getBoundingClientRect();
+  const i = Math.max(0, Math.min(N - 1,
+    Math.round((ev.clientX - box.left + view.left - state.px / 2) / state.px)));
+  if (crosshair) { crosshair.setAttribute("x1", x(i)); crosshair.setAttribute("x2", x(i)); crosshair.setAttribute("visibility", "visible"); }
+
+  tip.innerHTML = "";
+  const d = document.createElement("div"); d.className = "t-date"; d.textContent = dt(DATA.times[i]);
+  tip.append(d);
+  tip.append(row("var(--price)", price(DATA.close[i]), "close"));
+
+  const here = shown().filter((t) => i >= t.i0 && i <= t.i1);
+  if (here.length) {
+    tip.append(document.createElement("hr"));
+    for (const t of here.slice(0, 3)) {
+      const c = t.pnl > 0 ? "var(--win)" : "var(--loss)";
+      tip.append(row(c, (t.pnl >= 0 ? "+" : "") + t.pnl.toFixed(2), `#${t.id} ${t.reason.replace("_", " ").toLowerCase()}`));
+      tip.append(row(null, price(t.p0) + " → " + price(t.p1), `${t.side}, ${t.bars} bars`));
+    }
+  }
+  tip.style.opacity = "1";
+  const left = Math.min(ev.clientX + 16, window.innerWidth - tip.offsetWidth - 10);
+  tip.style.left = left + "px";
+  tip.style.top = Math.min(ev.clientY + 16, window.innerHeight - tip.offsetHeight - 10) + "px";
+});
+$("scroller").addEventListener("pointerleave", () => {
+  tip.style.opacity = "0";
+  if (crosshair) crosshair.setAttribute("visibility", "hidden");
+});
+$("scroller").addEventListener("keydown", (ev) => {
+  const step = ev.shiftKey ? 800 : 120;
+  if (ev.key === "ArrowRight") { $("scroller").scrollLeft += step; ev.preventDefault(); }
+  if (ev.key === "ArrowLeft") { $("scroller").scrollLeft -= step; ev.preventDefault(); }
+});
+
+layout();
+draw();
+$("foot").textContent = `${DATA.close.length.toLocaleString()} ${DATA.shownTf} bars · generated ${DATA.generated} by scripts/plot_run.py`;
+</script>
