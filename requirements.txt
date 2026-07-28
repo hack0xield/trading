@@ -14,6 +14,11 @@ PyYAML>=6.0
 # Tests
 pytest>=7.4
 
+# Reading CME's margin history PDF (scripts/margins.py import). Only needed
+# when importing; everything else works without it.
+pypdf>=4.0
+# openpyxl>=3.1   # uncomment if CME hands you .xlsx instead of .pdf/.csv
+
 # Ad-hoc analysis: SQL straight against the Parquet store, no import step.
 # Note it renders timestamps in the session timezone — `SET TimeZone='UTC';`
 # first, or the day boundary will not be where you think it is.

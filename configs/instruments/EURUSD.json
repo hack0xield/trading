@@ -1,0 +1,15 @@
+{
+  "symbol": "EURUSD",
+  "digits": 5,
+  "contract_size": 100000.0,
+  "tick_size": 1e-05,
+  "tick_value": 1.0,
+  "min_volume": 0.01,
+  "max_volume": 500.0,
+  "volume_step": 0.01,
+  "spread_points": 0.0,
+  "commission_per_lot": 0.0,
+  "swap_long": -0.7,
+  "swap_short": -1.0,
+  "currency": "USD"
+}
