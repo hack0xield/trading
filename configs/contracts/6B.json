@@ -1,0 +1,13 @@
+{
+  "code": "6B",
+  "name": "British Pound futures",
+  "exchange": "CME",
+  "contract_size": 62500.0,
+  "base_currency": "GBP",
+  "quote_currency": "USD",
+  "tick_size": 0.0001,
+  "tick_value": 6.25,
+  "pip_size": 0.0001,
+  "_note": "NP = 1 here, not 2 — the tick IS a pip. Proof the note's 'NP always = 2' does not generalise.",
+  "_verify": "cmegroup.com > Markets > FX > G10 > British Pound > Contract Specs"
+}

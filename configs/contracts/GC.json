@@ -1,0 +1,13 @@
+{
+  "code": "GC",
+  "name": "Gold futures",
+  "exchange": "COMEX",
+  "contract_size": 100.0,
+  "base_currency": "XAU",
+  "quote_currency": "USD",
+  "tick_size": 0.10,
+  "tick_value": 10.0,
+  "pip_size": 0.10,
+  "_note": "NP = 1. The historical-margins link in Margin Zones.md points at #metals, so this is the contract that link lands on — and using NP=2 here would halve every zone.",
+  "_verify": "cmegroup.com > Markets > Metals > Precious > Gold > Contract Specs"
+}

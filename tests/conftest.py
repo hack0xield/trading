@@ -90,3 +90,37 @@ def make_bar():
 @pytest.fixture
 def make_series():
     return series
+
+
+# --------------------------------------------------------------- network opt-in
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--network",
+        action="store_true",
+        default=False,
+        help="also run tests that reach the public internet",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "network: needs the public internet; opt in with --network")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip network tests unless asked for.
+
+    The suite has to stay runnable offline and deterministic — a red bar caused
+    by someone else's firewall teaches you nothing about this code.
+    """
+    if config.getoption("--network"):
+        return
+    skip = pytest.mark.skip(reason="needs --network")
+    for item in items:
+        if "network" in item.keywords:
+            item.add_marker(skip)
+
+
+@pytest.fixture
+def cme_url() -> str:
+    return "https://www.cmegroup.com/markets/fx/g10/euro-fx.margins.html"

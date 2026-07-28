@@ -1,0 +1,13 @@
+{
+  "code": "6E",
+  "name": "Euro FX futures",
+  "exchange": "CME",
+  "contract_size": 125000.0,
+  "base_currency": "EUR",
+  "quote_currency": "USD",
+  "tick_size": 0.00005,
+  "tick_value": 6.25,
+  "pip_size": 0.0001,
+  "_note": "NP = pip/tick = 2. This is the contract the worked example in Margin Zones.md uses.",
+  "_verify": "cmegroup.com > Markets > FX > G10 > Euro FX > Contract Specs"
+}

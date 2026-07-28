@@ -1,0 +1,467 @@
+<meta charset="utf-8">
+<title>__TITLE__</title>
+
+<style>
+/*__STYLE__*/
+/* zones-specific additions */
+.caution {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-left: 3px solid var(--loss); border-radius: 8px;
+  padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: var(--text-secondary);
+}
+.caution strong { color: var(--text-primary); }
+</style>
+
+<div class="viz-root">
+<div class="wrap">
+  <h1 id="title">Margin zones</h1>
+  <p class="sub" id="subtitle"></p>
+
+  <div id="caution"></div>
+  <div class="stats" id="stats"></div>
+  <p class="sub" id="statnote"></p>
+
+  <div class="controls">
+    <div class="ctl">
+      <span>Zoom</span>
+      <div class="seg" id="zoom" role="group" aria-label="Zoom level"></div>
+    </div>
+    <div class="ctl">
+      <span>Draw</span>
+      <div class="seg" id="filter" role="group" aria-label="What to draw"></div>
+    </div>
+    <div class="ctl">
+      <span>Price scale</span>
+      <div class="seg" id="scale" role="group" aria-label="Price scale"></div>
+    </div>
+    <div class="ctl"><span id="count"></span></div>
+  </div>
+
+  <div class="chart">
+    <div class="chart-row">
+      <svg class="yaxis" id="yaxis" aria-hidden="true"></svg>
+      <div class="scroller" id="scroller" tabindex="0" role="img"
+           aria-label="Price chart with ZigZag pivots and margin-zone envelopes">
+        <div class="track" id="track"><svg id="plot"></svg></div>
+      </div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <p class="hint">Scroll sideways to move through time · hover for details · arrow keys pan when focused</p>
+  </div>
+
+  <details>
+    <summary>Table view — every pivot and its zone</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Kind</th><th>Extreme at</th><th>Price</th>
+            <th>Confirmed</th><th>Lag</th><th>FMZ</th><th>IMZ</th>
+            <th>Pips</th><th>MM used</th><th>Reached</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <p class="foot" id="foot"></p>
+</div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+
+const PLOT_H = 460, XAXIS_H = 26, YAXIS_W = 74, PAD = 14;
+const state = { px: 4, filter: "both", scale: "fit" };
+const N = DATA.close.length;
+
+const $ = (id) => document.getElementById(id);
+const SVG = "http://www.w3.org/2000/svg";
+const el = (name, attrs) => {
+  const n = document.createElementNS(SVG, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+};
+const DIG = DATA.digits;
+const px_ = (v) => v.toLocaleString("en-US", { minimumFractionDigits: DIG, maximumFractionDigits: DIG });
+const dt = (s) => new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ");
+const day = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+
+let gLo = Infinity, gHi = -Infinity;
+for (let i = 0; i < N; i++) {
+  if (DATA.low[i] < gLo) gLo = DATA.low[i];
+  if (DATA.high[i] > gHi) gHi = DATA.high[i];
+}
+for (const e of DATA.envelopes) { gLo = Math.min(gLo, e.imz, e.fmz); gHi = Math.max(gHi, e.imz, e.fmz); }
+{ const s = gHi - gLo; gLo -= s * 0.03; gHi += s * 0.03; }
+
+const view = { i0: 0, i1: 0, lo: gLo, hi: gHi, left: 0, w: 0 };
+const y = (p) => PAD + (view.hi - p) / (view.hi - view.lo) * (PLOT_H - 2 * PAD);
+const x = (i) => i * state.px - view.left + state.px / 2;
+
+const drawEnv = () => state.filter === "both" || state.filter === "zones";
+const drawZig = () => state.filter === "both" || state.filter === "pivots";
+
+function measure() {
+  const sc = $("scroller");
+  view.w = sc.clientWidth || 900;
+  view.left = sc.scrollLeft;
+  view.i0 = Math.max(0, Math.floor(view.left / state.px) - 1);
+  view.i1 = Math.min(N - 1, Math.ceil((view.left + view.w) / state.px) + 1);
+
+  if (state.scale === "full") { view.lo = gLo; view.hi = gHi; return; }
+  let lo = Infinity, hi = -Infinity;
+  for (let i = view.i0; i <= view.i1; i++) {
+    if (DATA.low[i] < lo) lo = DATA.low[i];
+    if (DATA.high[i] > hi) hi = DATA.high[i];
+  }
+  // A zone that projects off-screen is the interesting case, so the scale has
+  // to make room for it rather than clip it away.
+  if (drawEnv()) {
+    for (const e of DATA.envelopes) {
+      if (e.i1 < view.i0 || e.i0 > view.i1) continue;
+      lo = Math.min(lo, e.fmz, e.imz); hi = Math.max(hi, e.fmz, e.imz);
+    }
+  }
+  if (!isFinite(lo)) { lo = gLo; hi = gHi; }
+  const s = (hi - lo) || 1;
+  view.lo = lo - s * 0.06; view.hi = hi + s * 0.06;
+}
+
+function ticks(min, max, n) {
+  const raw = (max - min) / n;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(min / step) * step; v <= max; v += step) out.push(v);
+  return out;
+}
+
+// ---- header -----------------------------------------------------------
+$("title").textContent =
+  `${DATA.symbol} ${DATA.timeframe} — margin zones from ${DATA.pivots.length} swing pivots`;
+$("subtitle").innerHTML = "";
+$("subtitle").append(
+  `${day(DATA.times[0])} to ${day(DATA.times[N - 1])} · `,
+  `ZigZag deviation ${DATA.deviation} · margin from ${DATA.contract} `,
+  `(pip value ${DATA.pipValue.toFixed(2)} = PP ${DATA.tickValue} x NP ${DATA.np}) · `,
+);
+const codeEl = document.createElement("code");
+codeEl.textContent = `FMZ = MM/(PP*NP), IMZ = FMZ*${DATA.initialRatio}`;
+$("subtitle").append(codeEl);
+
+if (DATA.caution) {
+  const c = document.createElement("div");
+  c.className = "caution";
+  const b = document.createElement("strong");
+  b.textContent = "Placeholder margin data. ";
+  c.append(b, DATA.caution);
+  $("caution").append(c);
+}
+
+const st = DATA.stats;
+const hero = document.createElement("div");
+hero.className = "hero";
+const hl = document.createElement("div"); hl.className = "label";
+hl.textContent = "Zones drawn";
+const hv = document.createElement("div"); hv.className = "value";
+hv.textContent = String(DATA.envelopes.length);
+hero.append(hl, hv);
+$("stats").append(hero);
+for (const [label, value] of [
+  ["Pivots", String(DATA.pivots.length)],
+  ["Median swing", DATA.medianSwing.toFixed(2) + "%"],
+  ["Avg FMZ", (st.avg_fmz_pips || 0).toFixed(0) + " pips = " + DATA.fmzPct.toFixed(2) + "%"],
+  ["Margin readings", String(st.distinct_margins || 0)],
+  ["Reached FMZ", (st.reached_fmz_pct || 0).toFixed(0) + "%"],
+]) {
+  const t = document.createElement("div"); t.className = "tile";
+  const a = document.createElement("div"); a.className = "label"; a.textContent = label;
+  const b = document.createElement("div"); b.className = "value"; b.textContent = value;
+  t.append(a, b); $("stats").append(t);
+}
+
+// "Reached FMZ" is largely determined by the ZigZag threshold, not by the
+// zones — a leg travels at least `deviation` by construction, so once
+// deviation exceeds the FMZ distance the zone is crossed automatically. Say so
+// next to the number rather than letting it read as evidence.
+$("statnote").textContent =
+  `Median swing ${DATA.medianSwing.toFixed(2)}% vs FMZ ${DATA.fmzPct.toFixed(2)}%. ` +
+  `"Reached FMZ" mostly reflects that ratio — a ZigZag leg moves at least the ` +
+  `deviation by construction — so it measures the threshold, not whether the ` +
+  `zone predicts anything. Testing that needs a comparison against arbitrary ` +
+  `levels the same distance away.`;
+
+// ---- legend -----------------------------------------------------------
+for (const [color, glyph, text] of [
+  ["var(--price)", "", `${DATA.symbol} price (${DATA.timeframe} close)`],
+  ["var(--text-primary)", "", "ZigZag — confirmed swing pivots"],
+  ["var(--win)", "●", "Low pivot — [FMZ, IMZ] projected up"],
+  ["var(--loss)", "●", "High pivot — [FMZ, IMZ] projected down"],
+  ...(DATA.prov ? [["var(--muted)", "○",
+    `Unconfirmed ${DATA.prov.kind} ${px_(DATA.prov.p)} (${DATA.prov.bars} bars ago) — ` +
+    `needs ${px_(DATA.prov.confirmAt)} to become a pivot; no zone is drawn from it`]] : []),
+]) {
+  const item = document.createElement("div"); item.className = "item";
+  const sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = color;
+  item.append(sw);
+  if (glyph) {
+    const g = document.createElement("span"); g.className = "glyph";
+    g.style.color = color; g.textContent = glyph;
+    item.append(g);
+  }
+  const lab = document.createElement("span"); lab.textContent = text;
+  item.append(lab); $("legend").append(item);
+}
+
+// ---- controls ---------------------------------------------------------
+function seg(host, options, current, onPick) {
+  host.innerHTML = "";
+  for (const [value, label] of options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(value === current));
+    b.onclick = () => onPick(value);
+    host.append(b);
+  }
+}
+function controls() {
+  seg($("zoom"), [[2, "Far"], [4, "Mid"], [8, "Close"]], state.px, (v) => {
+    const sc = $("scroller");
+    const mid = (sc.scrollLeft + sc.clientWidth / 2) / state.px;
+    state.px = v; layout(); sc.scrollLeft = mid * v - sc.clientWidth / 2; draw();
+  });
+  seg($("filter"), [["both", "Both"], ["zones", "Zones"], ["pivots", "ZigZag"]],
+      state.filter, (v) => { state.filter = v; draw(); });
+  seg($("scale"), [["fit", "Fit visible"], ["full", "Full range"]],
+      state.scale, (v) => { state.scale = v; draw(); });
+}
+
+// ---- render -----------------------------------------------------------
+function layout() {
+  const H = PLOT_H + XAXIS_H;
+  const track = $("track");
+  track.style.width = (N * state.px) + "px";
+  track.style.height = H + "px";
+  $("plot").setAttribute("height", H);
+  $("yaxis").setAttribute("width", YAXIS_W);
+  $("yaxis").setAttribute("height", H);
+}
+
+function draw() {
+  controls();
+  measure();
+  const W = view.w, a = view.i0, b = view.i1;
+  const plot = $("plot"); plot.setAttribute("width", W); plot.innerHTML = "";
+  const ya = $("yaxis"); ya.innerHTML = "";
+
+  for (const v of ticks(view.lo, view.hi, 6)) {
+    const yy = y(v);
+    if (yy < 6 || yy > PLOT_H - 4) continue;
+    plot.append(el("line", { x1: 0, y1: yy, x2: W, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const lab = el("text", {
+      x: YAXIS_W - 10, y: yy + 4, "text-anchor": "end",
+      fill: "var(--muted)", "font-size": 11, "font-family": "system-ui, sans-serif",
+    });
+    lab.style.fontVariantNumeric = "tabular-nums";
+    lab.textContent = v.toFixed(DIG > 2 ? 4 : 2);
+    ya.append(lab);
+  }
+  ya.append(el("line", { x1: YAXIS_W - 1, y1: 0, x2: YAXIS_W - 1, y2: PLOT_H,
+                         stroke: "var(--axis)", "stroke-width": 1 }));
+
+  // Envelopes go down first, so price and the ZigZag spine read on top of them.
+  let drawn = 0;
+  if (drawEnv()) {
+    for (const e of DATA.envelopes) {
+      if (e.i1 < a || e.i0 > b) continue;
+      drawn++;
+      const c = e.dir > 0 ? "var(--win)" : "var(--loss)";
+      const x0 = x(e.i0), x1 = x(e.i1);
+      const yF = y(e.fmz), yI = y(e.imz);
+      plot.append(el("rect", {
+        x: Math.min(x0, x1), y: Math.min(yF, yI), width: Math.max(1, Math.abs(x1 - x0)),
+        height: Math.max(1, Math.abs(yI - yF)), fill: c, "fill-opacity": 0.14,
+      }));
+      // The near edge is the one price meets first, so it gets the solid rule.
+      plot.append(el("line", { x1: x0, y1: yF, x2: x1, y2: yF,
+                               stroke: c, "stroke-width": 1.5, "stroke-opacity": 0.95 }));
+      plot.append(el("line", { x1: x0, y1: yI, x2: x1, y2: yI,
+                               stroke: c, "stroke-width": 1, "stroke-opacity": 0.6 }));
+    }
+  }
+
+  // Price.
+  let band = "", line = "";
+  for (let i = a; i <= b; i++) band += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.high[i]).toFixed(1);
+  for (let i = b; i >= a; i--) band += "L" + x(i).toFixed(1) + "," + y(DATA.low[i]).toFixed(1);
+  plot.append(el("path", { d: band + "Z", fill: "var(--price)", "fill-opacity": 0.10, stroke: "none" }));
+  for (let i = a; i <= b; i++) line += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.close[i]).toFixed(1);
+  plot.append(el("path", { d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
+                           "stroke-linejoin": "round", "stroke-linecap": "round" }));
+
+  // ZigZag spine and its pivots.
+  if (drawZig()) {
+    const near = DATA.pivots.filter((p) => p.i >= a - 400 && p.i <= b + 400);
+    if (near.length > 1) {
+      let d = "";
+      for (let k = 0; k < near.length; k++) {
+        d += (k ? "L" : "M") + x(near[k].i).toFixed(1) + "," + y(near[k].p).toFixed(1);
+      }
+      plot.append(el("path", { d, fill: "none", stroke: "var(--text-primary)", "stroke-width": 2,
+                               "stroke-opacity": 0.75, "stroke-linejoin": "round" }));
+    }
+    for (const p of near) {
+      if (p.i < a || p.i > b) continue;
+      plot.append(el("circle", {
+        cx: x(p.i), cy: y(p.p), r: 4.5,
+        fill: p.kind === "low" ? "var(--win)" : "var(--loss)",
+        stroke: "var(--surface-1)", "stroke-width": 2,
+      }));
+    }
+
+    // The leg still in progress. Dashed and hollow because it is not a pivot:
+    // it can move further or be erased entirely, and no zone is drawn from it.
+    const pv = DATA.prov;
+    if (pv && DATA.pivots.length) {
+      const lastP = DATA.pivots[DATA.pivots.length - 1];
+      if (!(pv.i < a && lastP.i < a) && !(pv.i > b && lastP.i > b)) {
+        plot.append(el("line", {
+          x1: x(lastP.i), y1: y(lastP.p), x2: x(pv.i), y2: y(pv.p),
+          stroke: "var(--text-primary)", "stroke-width": 2, "stroke-opacity": 0.45,
+          "stroke-dasharray": "5 4", "stroke-linecap": "round",
+        }));
+        plot.append(el("circle", {
+          cx: x(pv.i), cy: y(pv.p), r: 4.5, fill: "var(--surface-1)",
+          stroke: pv.kind === "low" ? "var(--win)" : "var(--loss)", "stroke-width": 2,
+        }));
+      }
+    }
+  }
+
+  // X axis.
+  let lastMonth = a > 0 ? new Date(DATA.times[a - 1] * 1000).toISOString().slice(0, 7) : "";
+  for (let i = a; i <= b; i++) {
+    const m = new Date(DATA.times[i] * 1000).toISOString().slice(0, 7);
+    if (m === lastMonth) continue;
+    lastMonth = m;
+    const xx = x(i);
+    plot.append(el("line", { x1: xx, y1: PLOT_H, x2: xx, y2: PLOT_H + 4,
+                             stroke: "var(--axis)", "stroke-width": 1 }));
+    const isYear = m.endsWith("-01");
+    const t = el("text", { x: xx + 4, y: PLOT_H + 17, fill: "var(--muted)",
+                           "font-size": 11, "font-family": "system-ui, sans-serif" });
+    t.textContent = isYear ? m.slice(0, 4) : m.slice(5);
+    if (isYear) t.setAttribute("font-weight", "600");
+    plot.append(t);
+  }
+  plot.append(el("line", { x1: 0, y1: PLOT_H, x2: W, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  crosshair = el("line", { x1: 0, y1: 0, x2: 0, y2: PLOT_H, stroke: "var(--axis)",
+                           "stroke-width": 1, visibility: "hidden" });
+  plot.append(crosshair);
+
+  $("count").textContent =
+    `${drawn} zone(s) on screen · ${DATA.envelopes.length} of ${DATA.pivots.length} pivots have margin data`;
+  buildTable();
+}
+
+function buildTable() {
+  const tb = $("tbody");
+  tb.innerHTML = "";
+  const byPivot = new Map(DATA.envelopes.map((e) => [e.pi, e]));
+  DATA.pivots.forEach((p, k) => {
+    const e = byPivot.get(k);
+    const tr = document.createElement("tr");
+    for (const [text, cls] of [
+      [String(k + 1), ""],
+      [p.kind, p.kind === "low" ? "up" : "down"],
+      [dt(p.t), ""],
+      [px_(p.p), ""],
+      [dt(DATA.times[p.ci]), ""],
+      [`+${p.ci - p.i} bars`, ""],
+      [e ? px_(e.fmz) : "—", ""],
+      [e ? px_(e.imz) : "—", ""],
+      [e ? e.pips.toFixed(0) : "—", ""],
+      [e ? e.mm.toLocaleString("en-US") : "—", ""],
+      [e ? (e.hit ? "yes" : "no") : "—", e && e.hit ? "up" : ""],
+    ]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.append(td);
+    }
+    tb.append(tr);
+  });
+}
+
+let queued = false;
+function schedule() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(); });
+}
+$("scroller").addEventListener("scroll", schedule, { passive: true });
+window.addEventListener("resize", schedule);
+
+// ---- hover ------------------------------------------------------------
+let crosshair = null;
+const tip = document.createElement("div");
+tip.className = "tooltip";
+document.body.append(tip);
+
+function row(color, value, label) {
+  const r = document.createElement("div"); r.className = "t-row";
+  if (color) { const k = document.createElement("span"); k.className = "t-key"; k.style.background = color; r.append(k); }
+  const v = document.createElement("span"); v.className = "t-val"; v.textContent = value;
+  const l = document.createElement("span"); l.className = "t-lab"; l.textContent = label;
+  r.append(v, l);
+  return r;
+}
+
+$("scroller").addEventListener("pointermove", (ev) => {
+  const box = $("plot").getBoundingClientRect();
+  const i = Math.max(0, Math.min(N - 1,
+    Math.round((ev.clientX - box.left + view.left - state.px / 2) / state.px)));
+  if (crosshair) {
+    crosshair.setAttribute("x1", x(i)); crosshair.setAttribute("x2", x(i));
+    crosshair.setAttribute("visibility", "visible");
+  }
+
+  tip.innerHTML = "";
+  const d = document.createElement("div"); d.className = "t-date"; d.textContent = dt(DATA.times[i]);
+  tip.append(d);
+  tip.append(row("var(--price)", px_(DATA.close[i]), "close"));
+
+  const here = DATA.envelopes.filter((e) => i >= e.i0 && i <= e.i1);
+  if (here.length) {
+    tip.append(document.createElement("hr"));
+    for (const e of here.slice(0, 2)) {
+      const c = e.dir > 0 ? "var(--win)" : "var(--loss)";
+      const p = DATA.pivots[e.pi];
+      tip.append(row(c, px_(p.p), `${p.kind} pivot, ${dt(p.t).slice(0, 10)}`));
+      tip.append(row(null, `${px_(e.fmz)} → ${px_(e.imz)}`, `FMZ→IMZ (${e.pips.toFixed(0)} pips)`));
+      tip.append(row(null, e.mm.toLocaleString("en-US"), `MM as of ${e.asOf}`));
+    }
+  }
+  tip.style.opacity = "1";
+  tip.style.left = Math.min(ev.clientX + 16, window.innerWidth - tip.offsetWidth - 10) + "px";
+  tip.style.top = Math.min(ev.clientY + 16, window.innerHeight - tip.offsetHeight - 10) + "px";
+});
+$("scroller").addEventListener("pointerleave", () => {
+  tip.style.opacity = "0";
+  if (crosshair) crosshair.setAttribute("visibility", "hidden");
+});
+$("scroller").addEventListener("keydown", (ev) => {
+  const step = ev.shiftKey ? 800 : 120;
+  if (ev.key === "ArrowRight") { $("scroller").scrollLeft += step; ev.preventDefault(); }
+  if (ev.key === "ArrowLeft") { $("scroller").scrollLeft -= step; ev.preventDefault(); }
+});
+
+layout();
+draw();
+$("foot").textContent =
+  `${N.toLocaleString()} ${DATA.timeframe} bars · generated ${DATA.generated} by scripts/plot_zones.py`;
+</script>
