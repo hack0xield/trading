@@ -38,6 +38,7 @@ from backtester.data.loader import load_bars, resample  # noqa: E402
 from backtester.utils.timeutil import parse_dt  # noqa: E402
 
 TEMPLATE_PATH = Path(__file__).resolve().parent / "plot_run_template.html"
+STYLE_PATH = Path(__file__).resolve().parent / "chart_style.css"
 
 
 def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
@@ -143,7 +144,11 @@ def main(argv: list[str] | None = None) -> int:
         f"{payload['symbol']} {payload['strategy']} — "
         f"{len(payload['trades'])} trades on price"
     )
-    html = template.replace("/*__DATA__*/null", blob).replace("__TITLE__", title)
+    html = (
+        template.replace("/*__DATA__*/null", blob)
+        .replace("__TITLE__", title)
+        .replace("/*__STYLE__*/", STYLE_PATH.read_text(encoding="utf-8"))
+    )
 
     out = Path(args.out) if args.out else run_dir / "chart.html"
     out.write_text(html, encoding="utf-8")
