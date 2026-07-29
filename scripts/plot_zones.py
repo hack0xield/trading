@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backtester.analysis.envelopes import build_envelopes, margin_coverage, summarise  # noqa: E402
 from backtester.analysis.zigzag import provisional, swing_sizes, zigzag  # noqa: E402
 from backtester.data.loader import load_bars  # noqa: E402
+from backtester.data.results import write_rows  # noqa: E402
 from backtester.data.margins import (  # noqa: E402
     DEFAULT_INITIAL_RATIO,
     MarginLog,
@@ -69,6 +70,89 @@ def default_name(args, code: str) -> str:
     return "_".join(parts) + ".html"
 
 
+def save_dataset(
+    directory: Path, payload: dict, bars, pivots, envelopes, spec, args, stats
+) -> Path:
+    """Write the derived pivots and envelopes beside the chart.
+
+    Recomputing them costs ~7 ms, so this is not a cache. It is provenance:
+    the HTML inlines its data as one JSON blob, which is fine for looking at
+    and useless for querying. These CSVs answer "which levels was I actually
+    shown, from which margin reading" months later, and let a sweep across
+    thresholds be compared in SQL rather than by eye — the same reason a
+    backtest run writes trades.csv next to its summary.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+
+    write_rows(directory / "pivots.csv", [
+        {
+            "n": n,
+            "kind": p.kind,
+            "extreme_index": p.index,
+            "extreme_time": p.time.isoformat(),
+            "price": p.price,
+            "confirm_index": p.confirm_index,
+            "confirm_time": p.confirm_time.isoformat(),
+            "lag_bars": p.lag_bars,
+        }
+        for n, p in enumerate(pivots)
+    ])
+
+    index_of = {id(p): n for n, p in enumerate(pivots)}
+    write_rows(directory / "envelopes.csv", [
+        {
+            "pivot_n": index_of[id(e.pivot)],
+            "kind": e.pivot.kind,
+            "direction": e.direction,
+            "pivot_time": e.pivot.time.isoformat(),
+            "pivot_price": e.pivot.price,
+            "start_index": e.start_index,
+            "end_index": e.end_index,
+            "fmz_price": round(e.fmz_price, 6),
+            "imz_price": round(e.imz_price, 6),
+            "fmz_pips": round(e.fmz_pips, 2),
+            "imz_pips": round(e.imz_pips, 2),
+            "mz_pips": round(e.imz_pips - e.fmz_pips, 2),
+            "mz50_price": round(e.mid_price, 6),
+            "maintenance": e.maintenance,
+            "margin_as_of": e.margin_as_of.isoformat(),
+            "reached_fmz": e.touched(bars),
+            "reached_imz": e.reached_far(bars),
+        }
+        for e in envelopes
+    ])
+
+    summary = {
+        "symbol": args.symbol,
+        "timeframe": args.timeframe.upper(),
+        "contract": spec.to_dict(),
+        "period": {
+            "start": payload["times"] and datetime.fromtimestamp(
+                payload["times"][0], timezone.utc).isoformat(),
+            "end": payload["times"] and datetime.fromtimestamp(
+                payload["times"][-1], timezone.utc).isoformat(),
+            "bars": len(payload["close"]),
+        },
+        "zigzag": {
+            "deviation": payload["deviation"],
+            "pivots": len(pivots),
+            "median_swing_pct": payload["medianSwing"],
+        },
+        "zones": {
+            "initial_ratio": args.initial_ratio,
+            "count": len(envelopes),
+            "fmz_pct_of_price": payload["fmzPct"],
+            **stats,
+        },
+        "provisional": payload["prov"],
+        "margin_log": str(args.log),
+        "generated": payload["generated"],
+    }
+    with open(directory / "summary.json", "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, default=str)
+    return directory
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Plot ZigZag pivots and margin-zone envelopes over price.",
@@ -92,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
         help="ZigZag reversal in pips instead; overrides --deviation-pct",
     )
     parser.add_argument("--initial-ratio", type=float, default=DEFAULT_INITIAL_RATIO)
+    parser.add_argument(
+        "--save", action="store_true",
+        help="also write pivots.csv, envelopes.csv and summary.json beside the chart",
+    )
     parser.add_argument(
         "--out", "-o",
         help="output HTML; the default is named after the inputs, e.g. "
@@ -215,12 +303,22 @@ def main(argv: list[str] | None = None) -> int:
         .replace("/*__STYLE__*/", STYLE_PATH.read_text(encoding="utf-8"))
     )
 
-    out = Path(args.out) if args.out else Path("runs") / default_name(args, spec.code)
+    stem = default_name(args, spec.code)[:-len(".html")]
+    if args.save:
+        # Chart and data together, the way a backtest run directory works.
+        directory = Path(args.out).with_suffix("") if args.out else Path("runs") / stem
+        save_dataset(directory, payload, bars, pivots, envelopes, spec, args, stats)
+        out = directory / "chart.html"
+    else:
+        out = Path(args.out) if args.out else Path("runs") / f"{stem}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
 
     print(
         f"Wrote {out}  ({out.stat().st_size / 1024:,.0f} KB)\n"
+        + (f"  data          pivots.csv, envelopes.csv, summary.json in {out.parent}/\n"
+           if args.save else "")
+        +
         f"  {len(bars):,} {args.timeframe.upper()} bars, {len(pivots)} pivots, "
         f"{len(envelopes)} zones\n"
         f"  swing size    median {median_swing:.2f}% "

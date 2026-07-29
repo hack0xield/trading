@@ -1,4 +1,4 @@
-"""Persisting backtest runs.
+"""Persisting derived output — backtest runs, and analysis exports.
 
 A run directory is self-describing: the parameters, the metrics, every trade
 and the equity curve, all in formats you can open without this codebase. That
@@ -53,8 +53,8 @@ def save_result(
     with open(directory / "summary.json", "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, default=str)
 
-    _write_rows(directory / "trades.csv", [t.as_row() for t in result.trades])
-    _write_rows(directory / "equity.csv", [p.as_row() for p in result.equity])
+    write_rows(directory / "trades.csv", [t.as_row() for t in result.trades])
+    write_rows(directory / "equity.csv", [p.as_row() for p in result.equity])
 
     if result.logs:
         with open(directory / "run.log", "w", encoding="utf-8") as fh:
@@ -63,7 +63,7 @@ def save_result(
     return directory
 
 
-def _write_rows(path: Path, rows: list[dict]) -> None:
+def write_rows(path: Path, rows: list[dict]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
