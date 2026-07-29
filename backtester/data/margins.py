@@ -154,42 +154,58 @@ class MarginObservation:
 
 @dataclass(slots=True)
 class MarginZones:
-    """The computed zones for one contract at one point in time."""
+    """The computed zones for one contract at one point in time.
+
+    Terminology follows `MarginZones_revised.md` §8, which is strict about it:
+
+    * **FMZ** — distance from the extremum to the **near** boundary
+    * **IMZ** — distance from the same extremum to the **far** boundary
+    * **MZ**  — the **width** of the interval between them, `IMZ - FMZ`
+
+    MZ is a width, never a distance from the extremum, and never a synonym for
+    FMZ. (This field was called `mr` while the earlier draft called the same
+    quantity a "margin range".)
+    """
 
     code: str
     as_of: date
     maintenance: float
     initial: float
     pip_value: float
-    fmz: float   # pips
-    imz: float   # pips
-    mr: float    # pips
+    fmz: float   # pips, to the near boundary
+    imz: float   # pips, to the far boundary
+    mz: float    # pips, the width of the zone
 
     def price_distance(self, spec: ContractSpec, pips: float) -> float:
         """Pips -> a price delta, for drawing a level on a chart."""
         return pips * spec.pip_size
+
+    def distance(self, fraction: float) -> float:
+        """§3.4: `Distance(p) = FMZ + MZ * p`, in pips.
+
+        The percentage is a position *inside* the zone, not a fraction of the
+        distance to it: 0% is the near boundary (FMZ), 100% the far one (IMZ),
+        50% the midpoint. So for the spec's example the 50% level is 243.6
+        pips from the extremum, not 116 and not 11.6 — the two readings the
+        earlier, looser wording could support.
+        """
+        return self.fmz + self.mz * fraction
 
     def levels(
         self,
         pivot: float,
         spec: ContractSpec,
         direction: int = 1,
-        fractions: tuple[float, ...] = (0.5, 1.0),
-        basis: str = "fmz",
+        fractions: tuple[float, ...] = (0.0, 0.5, 1.0),
     ) -> dict[str, float]:
-        """Project zone levels from a swing pivot.
+        """Zone levels as chart prices, projected from a swing pivot.
 
-        `direction` is +1 to project upward from a low, -1 downward from a high.
-        `basis` picks what the fractions are fractions *of* — the note is
-        ambiguous here (see the module docstring in scripts/margins.py), so it
-        is a parameter rather than a guess.
+        `direction` is +1 to project upward from a low, -1 downward from a
+        high — §4.1 puts a maximum's zone below it and §4.2 a minimum's above.
         """
-        base = {"fmz": self.fmz, "imz": self.imz, "mr": self.mr}.get(basis)
-        if base is None:
-            raise ValueError(f"basis must be one of fmz/imz/mr, got {basis!r}")
         sign = 1 if direction >= 0 else -1
         return {
-            f"{int(f * 100)}%": pivot + sign * self.price_distance(spec, base * f)
+            f"{f * 100:g}%": pivot + sign * self.price_distance(spec, self.distance(f))
             for f in fractions
         }
 
@@ -214,6 +230,14 @@ def compute_zones(
     fmz = observation.maintenance / pip_value
     initial = observation.initial_or_derived(initial_ratio)
     imz = initial / pip_value
+    # Validation rule 2: the far boundary must be beyond the near one, or the
+    # "zone" inverts and every percentage level inside it is meaningless.
+    if imz <= fmz:
+        raise ValueError(
+            f"{spec.code}: IMZ ({imz:,.1f}) must exceed FMZ ({fmz:,.1f}). "
+            f"initial margin {initial:,.0f} is not above maintenance "
+            f"{observation.maintenance:,.0f} — check the reading or initial_ratio."
+        )
     return MarginZones(
         code=spec.code,
         as_of=observation.as_of,
@@ -222,7 +246,7 @@ def compute_zones(
         pip_value=pip_value,
         fmz=fmz,
         imz=imz,
-        mr=imz - fmz,
+        mz=imz - fmz,
     )
 
 

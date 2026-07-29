@@ -57,12 +57,27 @@ def obs(maintenance=2900.0, as_of=TODAY, **kw) -> MarginObservation:
 
 
 class TestTheFormula:
-    def test_the_note_worked_example(self):
-        """MM 2900, PP 6.25, NP 2 -> FMZ 232, IMZ 255. The whole strategy in one line."""
+    def test_the_spec_worked_example(self):
+        """MarginZones_revised.md §5, in full: 232 / 255.2 / 23.2 / 243.6."""
         zones = compute_zones(spec_6e(), obs(2900.0))
-        assert zones.fmz == pytest.approx(232.0)
-        assert zones.imz == pytest.approx(255.2)
-        assert zones.mr == pytest.approx(23.2)
+        assert zones.fmz == pytest.approx(232.0)      # near boundary
+        assert zones.imz == pytest.approx(255.2)      # far boundary
+        assert zones.mz == pytest.approx(23.2)        # WIDTH, not a distance
+        assert zones.distance(0.5) == pytest.approx(243.6)   # 50% MZ
+
+    def test_distance_is_fmz_plus_mz_times_p(self):
+        """§3.4. The percentage is a position inside the zone, not a fraction
+        of the distance to it — which is what the earlier draft could be read
+        as, and would have put the 50% level at 116 or 11.6 instead of 243.6."""
+        z = compute_zones(spec_6e(), obs(2900.0))
+        assert z.distance(0.0) == pytest.approx(z.fmz)
+        assert z.distance(1.0) == pytest.approx(z.imz)
+        assert z.distance(0.25) == pytest.approx(232.0 + 23.2 * 0.25)
+
+    def test_fifty_percent_is_exactly_halfway(self):
+        """Validation rule 4."""
+        z = compute_zones(spec_6e(), obs(2900.0))
+        assert z.distance(0.5) == pytest.approx((z.fmz + z.imz) / 2)
 
     def test_pip_value_is_pp_times_np(self):
         spec = spec_6e()
@@ -224,31 +239,26 @@ class TestValidation:
 
 
 class TestLevels:
-    def test_levels_project_up_from_a_low(self):
+    def test_levels_span_the_zone_not_the_distance_to_it(self):
+        """The whole zone is 23.2 pips wide, 232 pips away — not 0 to 232."""
         spec = spec_6e()
         zones = compute_zones(spec, obs(2900.0))
-        levels = zones.levels(1.0850, spec, direction=1, fractions=(0.5, 1.0))
-        assert levels["50%"] == pytest.approx(1.0850 + 116 * 0.0001)
-        assert levels["100%"] == pytest.approx(1.0850 + 232 * 0.0001)
+        lv = zones.levels(1.0850, spec, direction=1, fractions=(0.0, 0.5, 1.0))
+        pips = {k: round((v - 1.0850) / spec.pip_size, 1) for k, v in lv.items()}
+        assert pips == {"0%": 232.0, "50%": 243.6, "100%": 255.2}
 
-    def test_levels_project_down_from_a_high(self):
+    def test_a_high_projects_the_same_zone_downward(self):
+        """§4.1 — a maximum's zone sits below it, same widths."""
         spec = spec_6e()
         zones = compute_zones(spec, obs(2900.0))
-        levels = zones.levels(1.0850, spec, direction=-1, fractions=(1.0,))
-        assert levels["100%"] == pytest.approx(1.0850 - 232 * 0.0001)
+        lv = zones.levels(1.0850, spec, direction=-1, fractions=(0.0, 0.5, 1.0))
+        pips = {k: round((1.0850 - v) / spec.pip_size, 1) for k, v in lv.items()}
+        assert pips == {"0%": 232.0, "50%": 243.6, "100%": 255.2}
 
-    def test_the_basis_changes_the_scale(self):
-        """FMZ 232 vs MR 23.2 — a 10x difference, which is why it is a parameter."""
-        spec = spec_6e()
-        zones = compute_zones(spec, obs(2900.0))
-        on_fmz = zones.levels(1.0, spec, fractions=(1.0,), basis="fmz")["100%"]
-        on_mr = zones.levels(1.0, spec, fractions=(1.0,), basis="mr")["100%"]
-        assert on_fmz - 1.0 == pytest.approx(10 * (on_mr - 1.0))
-
-    def test_an_unknown_basis_is_rejected(self):
-        spec = spec_6e()
-        with pytest.raises(ValueError, match="basis must be"):
-            compute_zones(spec, obs(2900.0)).levels(1.0, spec, basis="nonsense")
+    def test_an_inverted_zone_is_rejected(self):
+        """Validation rule 2: IMZ must exceed FMZ."""
+        with pytest.raises(ValueError, match="must exceed FMZ"):
+            compute_zones(spec_6e(), obs(2900.0), initial_ratio=0.9)
 
 
 class TestMarginLog:

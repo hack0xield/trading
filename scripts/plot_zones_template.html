@@ -197,8 +197,9 @@ $("statnote").textContent =
 for (const [color, glyph, text] of [
   ["var(--price)", "", `${DATA.symbol} price (${DATA.timeframe} close)`],
   ["var(--text-primary)", "", "ZigZag — confirmed swing pivots"],
-  ["var(--win)", "●", "Low pivot — [FMZ, IMZ] projected up"],
-  ["var(--loss)", "●", "High pivot — [FMZ, IMZ] projected down"],
+  ["var(--win)", "●", "Low pivot — zone above it: 0% MZ = FMZ, 100% MZ = IMZ"],
+  ["var(--loss)", "●", "High pivot — zone below it, same boundaries"],
+  ["var(--muted)", "", "Dashed hairline inside a zone = 50% MZ, its midpoint"],
   ...(DATA.prov ? [["var(--muted)", "○",
     `Unconfirmed ${DATA.prov.kind} ${px_(DATA.prov.p)} (${DATA.prov.bars} bars ago) — ` +
     `needs ${px_(DATA.prov.confirmAt)} to become a pivot; no zone is drawn from it`]] : []),
@@ -285,11 +286,16 @@ function draw() {
         x: Math.min(x0, x1), y: Math.min(yF, yI), width: Math.max(1, Math.abs(x1 - x0)),
         height: Math.max(1, Math.abs(yI - yF)), fill: c, "fill-opacity": 0.14,
       }));
-      // The near edge is the one price meets first, so it gets the solid rule.
+      // The near edge (0% MZ) is the one price meets first, so it gets the
+      // solid rule; the far edge is 100% MZ; the hairline between them is the
+      // 50% level, exactly halfway by definition.
       plot.append(el("line", { x1: x0, y1: yF, x2: x1, y2: yF,
                                stroke: c, "stroke-width": 1.5, "stroke-opacity": 0.95 }));
       plot.append(el("line", { x1: x0, y1: yI, x2: x1, y2: yI,
                                stroke: c, "stroke-width": 1, "stroke-opacity": 0.6 }));
+      plot.append(el("line", { x1: x0, y1: (yF + yI) / 2, x2: x1, y2: (yF + yI) / 2,
+                               stroke: c, "stroke-width": 1, "stroke-opacity": 0.45,
+                               "stroke-dasharray": "3 3" }));
     }
   }
 

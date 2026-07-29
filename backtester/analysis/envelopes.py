@@ -37,12 +37,21 @@ class Envelope:
     start_index: int
     end_index: int
     direction: int        # +1 projected up from a low, -1 down from a high
-    fmz_price: float      # near edge
-    imz_price: float      # far edge
+    fmz_price: float      # near boundary, 0% MZ
+    imz_price: float      # far boundary, 100% MZ
     fmz_pips: float
     imz_pips: float
     maintenance: float
     margin_as_of: date
+
+    @property
+    def mid_price(self) -> float:
+        """50% MZ — exactly halfway between the boundaries (validation rule 4)."""
+        return (self.fmz_price + self.imz_price) / 2.0
+
+    def level(self, fraction: float) -> float:
+        """A price inside the zone: 0% at FMZ, 1.0 at IMZ (§3.4)."""
+        return self.fmz_price + (self.imz_price - self.fmz_price) * fraction
 
     @property
     def lo(self) -> float:
@@ -54,7 +63,7 @@ class Envelope:
 
     @property
     def width(self) -> float:
-        """MR, in price units."""
+        """MZ, in price units — the width of the zone, not a distance to it."""
         return abs(self.imz_price - self.fmz_price)
 
     def touched(self, bars: list[Bar]) -> bool:

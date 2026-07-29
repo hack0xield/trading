@@ -391,7 +391,7 @@ def cmd_add(args) -> int:
     zones = compute_zones(spec, observation, args.initial_ratio)
     print(
         f"Recorded {spec.code} MM={observation.maintenance:,.0f} as of {as_of} in {args.log}\n"
-        f"  FMZ {zones.fmz:,.1f} pips · IMZ {zones.imz:,.1f} pips · MR {zones.mr:,.1f} pips"
+        f"  FMZ {zones.fmz:,.1f} pips · IMZ {zones.imz:,.1f} pips · MZ {zones.mz:,.1f} pips wide"
     )
     return 0
 
@@ -418,7 +418,8 @@ def cmd_show(args) -> int:
           f"   (PP {spec.tick_value:g} x NP {spec.np:g})")
     print(f"  FMZ          {zones.fmz:,.1f} pips   = {zones.fmz * spec.pip_size:,.5g} in price")
     print(f"  IMZ          {zones.imz:,.1f} pips   = {zones.imz * spec.pip_size:,.5g} in price")
-    print(f"  MR           {zones.mr:,.1f} pips")
+    print(f"  MZ (width)   {zones.mz:,.1f} pips")
+    print(f"  50% MZ       {zones.distance(0.5):,.1f} pips from the extremum")
 
     for problem in validate_observation(observation, spec):
         print(f"  ! {problem}")
@@ -426,16 +427,13 @@ def cmd_show(args) -> int:
     if args.pivot:
         direction = -1 if args.direction == "down" else 1
         fractions = tuple(float(f) for f in args.fractions.split(","))
-        print(f"\n  levels from pivot {args.pivot:g}, {args.direction}, as fractions of {args.basis.upper()}:")
+        print(f"\n  zone from pivot {args.pivot:g}, projected {args.direction}"
+              f" (0% = FMZ near edge, 100% = IMZ far edge):")
         for label, level in zones.levels(
-            args.pivot, spec, direction=direction, fractions=fractions, basis=args.basis
+            args.pivot, spec, direction=direction, fractions=fractions
         ).items():
-            print(f"    {label:>6} {basis_label(args.basis)}   {level:,.5f}")
+            print(f"    {label:>6} MZ   {level:,.5f}")
     return 0
-
-
-def basis_label(basis: str) -> str:
-    return {"fmz": "FMZ", "imz": "IMZ", "mr": "MR"}[basis]
 
 
 def cmd_check(args) -> int:
@@ -531,8 +529,8 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--on", help="use the reading in force on this date")
     show.add_argument("--pivot", type=float, help="project levels from this price")
     show.add_argument("--direction", choices=["up", "down"], default="up")
-    show.add_argument("--fractions", default="0.5,1.0")
-    show.add_argument("--basis", choices=["fmz", "imz", "mr"], default="fmz")
+    show.add_argument("--fractions", default="0,0.5,1.0",
+                      help="positions inside the zone, 0 = FMZ, 1 = IMZ")
     show.set_defaults(func=cmd_show)
 
     subs.add_parser("check", parents=[common], help="validate every reading in the log"
