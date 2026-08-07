@@ -10,10 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from backtester.analysis import build_envelopes, provisional, zigzag
-from backtester.analysis.report import build_payload, report_name, write_report
+from backtester.indicators.zigzag import provisional, zigzag
+from backtester.strategies.margin_zones import (
+    build_envelopes,
+    build_payload,
+    report_name,
+    write_report,
+)
 from backtester.data.loader import load_bars
-from backtester.data.margins import MarginLog, load_spec
+from backtester.strategies.margin_zones import MarginLog, load_spec
 from backtester.utils.params import StrategyParams
 
 from ..telegram import escape

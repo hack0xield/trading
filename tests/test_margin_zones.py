@@ -6,12 +6,13 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from backtester.analysis import (
-    Pivot, build_envelopes, legs, pivots_known_by, provisional, swing_sizes, zigzag,
-)
-from backtester.analysis.envelopes import margin_coverage, summarise
 from backtester.core.types import Bar
-from backtester.data.margins import ContractSpec, MarginLog, MarginObservation
+from backtester.indicators.zigzag import (
+    Pivot, legs, pivots_known_by, provisional, swing_sizes, zigzag,
+)
+from backtester.strategies.margin_zones import (
+    ContractSpec, MarginLog, MarginObservation, build_envelopes, margin_coverage, summarise,
+)
 
 UTC = timezone.utc
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
@@ -269,7 +270,7 @@ class TestReportName:
     """Timestamp-first, so runs sort chronologically and never collide."""
 
     def test_it_leads_with_a_utc_stamp_then_the_inputs(self):
-        from backtester.analysis.report import report_name
+        from backtester.strategies.margin_zones import report_name
 
         name = report_name("EURUSD", "H4", "6E", "2%", stamp=T0)
         assert name == "20240101-000000_zones_EURUSD_H4_6E_dev2pct"
@@ -277,7 +278,7 @@ class TestReportName:
     def test_two_runs_a_second_apart_do_not_collide(self):
         from datetime import timedelta
 
-        from backtester.analysis.report import report_name
+        from backtester.strategies.margin_zones import report_name
 
         a = report_name("EURUSD", "H4", "6E", "2%", stamp=T0)
         b = report_name("EURUSD", "H4", "6E", "2%", stamp=T0 + timedelta(seconds=1))
@@ -285,6 +286,6 @@ class TestReportName:
         assert sorted([b, a]) == [a, b]      # chronological by string sort
 
     def test_pips_thresholds_survive_the_slug(self):
-        from backtester.analysis.report import report_name
+        from backtester.strategies.margin_zones import report_name
 
         assert report_name("EURUSD", "H4", "6E", "250 pips", stamp=T0).endswith("dev250pips")

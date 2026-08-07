@@ -19,7 +19,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from backtester.data.margins import (
+from backtester.strategies.margin_zones import (
     CONTRACT_DIR,
     ContractSpec,
     MarginLog,
@@ -359,7 +359,7 @@ class TestCliEndToEnd:
     def test_check_only_calls_the_newest_reading_stale(self, tmp_path, capsys):
         """A six-year import must not emit one 'this is old' warning per row."""
         import scripts.margins as cli
-        from backtester.data.margins import MarginLog, MarginObservation
+        from backtester.strategies.margin_zones import MarginLog, MarginObservation
 
         log = MarginLog(tmp_path / "m.csv")
         for year, mm in ((2021, 2000.0), (2022, 2400.0), (2023, 2650.0)):

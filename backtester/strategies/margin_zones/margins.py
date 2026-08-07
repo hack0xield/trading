@@ -32,8 +32,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 DEFAULT_INITIAL_RATIO = 1.1
-CONTRACT_DIR = Path(__file__).resolve().parents[2] / "configs" / "contracts"
-MARGIN_LOG = Path(__file__).resolve().parents[2] / "configs" / "margins.csv"
+CONTRACT_DIR = Path(__file__).resolve().parents[3] / "configs" / "contracts"
+MARGIN_LOG = Path(__file__).resolve().parents[3] / "configs" / "margins.csv"
 
 
 @dataclass(slots=True)

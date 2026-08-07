@@ -19,14 +19,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from ..core.types import Bar
-from ..data.margins import (
+from ...core.types import Bar
+from .margins import (
     DEFAULT_INITIAL_RATIO,
     ContractSpec,
     MarginLog,
     compute_zones,
 )
-from .zigzag import Pivot
+from ...indicators.zigzag import Pivot
 
 
 @dataclass(frozen=True, slots=True)

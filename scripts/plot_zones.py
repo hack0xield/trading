@@ -33,16 +33,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtester.analysis.envelopes import build_envelopes, margin_coverage, summarise  # noqa: E402
-from backtester.analysis.report import (  # noqa: E402
-    build_payload, render_chart, report_name, write_report,
-)
-from backtester.analysis.zigzag import provisional, swing_sizes, zigzag  # noqa: E402
+from backtester.indicators.zigzag import provisional, swing_sizes, zigzag  # noqa: E402
 from backtester.data.loader import load_bars  # noqa: E402
-from backtester.data.margins import (  # noqa: E402
+from backtester.strategies.margin_zones import (  # noqa: E402
     DEFAULT_INITIAL_RATIO,
     MarginLog,
+    build_envelopes,
+    build_payload,
     load_spec,
+    margin_coverage,
+    render_chart,
+    report_name,
+    summarise,
+    write_report,
 )
 
 def default_name(args, code: str) -> str:

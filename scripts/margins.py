@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backtester.data.margins import (  # noqa: E402
+from backtester.strategies.margin_zones import (  # noqa: E402
     DEFAULT_INITIAL_RATIO,
     MarginLog,
     MarginObservation,
