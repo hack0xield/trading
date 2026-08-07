@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy to configs/telegram.json (gitignored). Get a token from @BotFather.",
+  "bot_token": "123456789:AAExampleTokenReplaceMe"
+}

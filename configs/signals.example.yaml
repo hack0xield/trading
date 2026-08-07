@@ -1,0 +1,34 @@
+# Scheduled signal jobs.  Copy to configs/signals.yaml and edit.
+#
+#   cp configs/signals.example.yaml configs/signals.yaml
+#   scripts/run_signals.py --chats            # find your chat ids
+#   scripts/run_signals.py --dry-run          # see what it would send
+#   scripts/run_signals.py --send             # actually send
+#
+# The bot token does NOT live here — see configs/telegram.example.json.
+
+token_file: configs/telegram.json
+data: parquet://data/bars      # where bars live; shared by every strategy
+
+groups:
+  ops:
+    description: Operator channel — failures and stale-data warnings.
+    chat_ids: ["123456789"]
+  eurusd:
+    description: EURUSD margin-zone subscribers.
+    chat_ids: ["123456789"]
+
+jobs:
+  - name: eurusd-heartbeat
+    strategy: margin_zones     # scripts/run_signals.py --list-strategies
+    symbol: EURUSD
+    timeframe: H4
+    params:                    # validated against that strategy; typos rejected
+      contract: 6E
+      deviation_pct: 2.0
+      margin_log: configs/margins.csv
+      initial_ratio: 1.1
+    refresh: true              # pull fresh bars first, if this host has MetaTrader
+    notify: [eurusd]           # who gets the signal
+    on_error: [ops]            # who hears when it breaks or the feed goes stale
+    enabled: true

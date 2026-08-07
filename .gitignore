@@ -23,3 +23,10 @@ __pycache__/
 *.parquet
 *.db
 *.sqlite3
+
+# Signal delivery secrets
+configs/telegram.json
+configs/signals.yaml
+
+# Local archives of regenerable data
+*.zip

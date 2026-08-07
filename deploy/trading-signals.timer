@@ -1,0 +1,12 @@
+[Unit]
+Description=Run trading signals daily
+
+[Timer]
+# Daily at 06:10 UTC — shortly after the 06:00 H4 bar closes on a UTC+3
+# broker, so the newest bar is complete rather than half-formed.
+OnCalendar=*-*-* 06:10:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,28 @@
+# systemd user service. Install with:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/trading-signals.* ~/.config/systemd/user/
+#   loginctl enable-linger $USER        # REQUIRED: else it dies at logout
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now trading-signals.timer
+#
+# Watch it:  journalctl --user -u trading-signals -f
+[Unit]
+Description=Trading signals — refresh bars, evaluate, notify
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/trading
+# MetaTrader is a GUI app under Wine and needs a display. :1 is the desktop
+# session; for headless operation run Xvfb and point this at that instead.
+Environment=DISPLAY=:1
+Environment=WINEPREFIX=%h/.mt5
+Environment=WINEDEBUG=-all
+ExecStart=%h/Documents/trading/.venv/bin/python scripts/run_signals.py --send --quiet
+# The pipeline and the MCP server both drive one terminal; without this they
+# intermittently kill each other's connection.
+ExecStartPre=/usr/bin/flock -w 300 /tmp/mt5.lock true
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=default.target
