@@ -28,26 +28,22 @@ could have acted on at the time.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtester.analysis.envelopes import build_envelopes, margin_coverage, summarise  # noqa: E402
+from backtester.analysis.report import (  # noqa: E402
+    build_payload, render_chart, report_name, write_report,
+)
 from backtester.analysis.zigzag import provisional, swing_sizes, zigzag  # noqa: E402
 from backtester.data.loader import load_bars  # noqa: E402
-from backtester.data.results import write_rows  # noqa: E402
 from backtester.data.margins import (  # noqa: E402
     DEFAULT_INITIAL_RATIO,
     MarginLog,
     load_spec,
 )
-
-TEMPLATE_PATH = Path(__file__).resolve().parent / "plot_zones_template.html"
-STYLE_PATH = Path(__file__).resolve().parent / "chart_style.css"
-
 
 def default_name(args, code: str) -> str:
     """Name the file after what produced it.
@@ -68,89 +64,6 @@ def default_name(args, code: str) -> str:
     if args.initial_ratio != DEFAULT_INITIAL_RATIO:
         parts.append(f"ir{args.initial_ratio:g}")
     return "_".join(parts) + ".html"
-
-
-def save_dataset(
-    directory: Path, payload: dict, bars, pivots, envelopes, spec, args, stats
-) -> Path:
-    """Write the derived pivots and envelopes beside the chart.
-
-    Recomputing them costs ~7 ms, so this is not a cache. It is provenance:
-    the HTML inlines its data as one JSON blob, which is fine for looking at
-    and useless for querying. These CSVs answer "which levels was I actually
-    shown, from which margin reading" months later, and let a sweep across
-    thresholds be compared in SQL rather than by eye — the same reason a
-    backtest run writes trades.csv next to its summary.
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-
-    write_rows(directory / "pivots.csv", [
-        {
-            "n": n,
-            "kind": p.kind,
-            "extreme_index": p.index,
-            "extreme_time": p.time.isoformat(),
-            "price": p.price,
-            "confirm_index": p.confirm_index,
-            "confirm_time": p.confirm_time.isoformat(),
-            "lag_bars": p.lag_bars,
-        }
-        for n, p in enumerate(pivots)
-    ])
-
-    index_of = {id(p): n for n, p in enumerate(pivots)}
-    write_rows(directory / "envelopes.csv", [
-        {
-            "pivot_n": index_of[id(e.pivot)],
-            "kind": e.pivot.kind,
-            "direction": e.direction,
-            "pivot_time": e.pivot.time.isoformat(),
-            "pivot_price": e.pivot.price,
-            "start_index": e.start_index,
-            "end_index": e.end_index,
-            "fmz_price": round(e.fmz_price, 6),
-            "imz_price": round(e.imz_price, 6),
-            "fmz_pips": round(e.fmz_pips, 2),
-            "imz_pips": round(e.imz_pips, 2),
-            "mz_pips": round(e.imz_pips - e.fmz_pips, 2),
-            "mz50_price": round(e.mid_price, 6),
-            "maintenance": e.maintenance,
-            "margin_as_of": e.margin_as_of.isoformat(),
-            "reached_fmz": e.touched(bars),
-            "reached_imz": e.reached_far(bars),
-        }
-        for e in envelopes
-    ])
-
-    summary = {
-        "symbol": args.symbol,
-        "timeframe": args.timeframe.upper(),
-        "contract": spec.to_dict(),
-        "period": {
-            "start": payload["times"] and datetime.fromtimestamp(
-                payload["times"][0], timezone.utc).isoformat(),
-            "end": payload["times"] and datetime.fromtimestamp(
-                payload["times"][-1], timezone.utc).isoformat(),
-            "bars": len(payload["close"]),
-        },
-        "zigzag": {
-            "deviation": payload["deviation"],
-            "pivots": len(pivots),
-            "median_swing_pct": payload["medianSwing"],
-        },
-        "zones": {
-            "initial_ratio": args.initial_ratio,
-            "count": len(envelopes),
-            "fmz_pct_of_price": payload["fmzPct"],
-            **stats,
-        },
-        "provisional": payload["prov"],
-        "margin_log": str(args.log),
-        "generated": payload["generated"],
-    }
-    with open(directory / "summary.json", "w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2, default=str)
-    return directory
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     bars = load_bars(args.symbol, args.timeframe, data=args.data,
                      start=args.start, end=args.end, validate=False)
 
+    deviation = (
+        f"{args.deviation_pips:g} pips" if args.deviation_pips else f"{args.deviation_pct:g}%"
+    )
     deviation_abs = args.deviation_pips * spec.pip_size if args.deviation_pips else None
     pivots = zigzag(
         bars,
@@ -237,82 +153,31 @@ def main(argv: list[str] | None = None) -> int:
             f"and are drawn without a zone (earliest is {pivots[0].time:%Y-%m-%d})"
         )
 
-    index_of = {id(p): k for k, p in enumerate(pivots)}
-    sizes = swing_sizes(pivots, as_pct=True)
-    median_swing = sorted(sizes)[len(sizes) // 2] if sizes else 0.0
-    # FMZ as a percentage of price, so it is comparable with the swing sizes.
-    mid_price = sum(b.close for b in bars) / len(bars)
-    fmz_pct = stats["avg_fmz_pips"] * spec.pip_size / mid_price * 100.0
-    caution = ""
-    if stats.get("distinct_margins", 0) <= 1:
-        caution = (
-            "Every zone on this chart uses the same maintenance margin, so the bands "
-            "scale with price alone. Real CME margin changes at contract roll and on "
-            "volatility — import the history to see the zones move with it."
-        )
-
-    payload = {
-        "symbol": args.symbol,
-        "timeframe": args.timeframe.upper(),
-        "contract": f"{spec.code} ({spec.name})",
-        "digits": max(2, len(str(spec.pip_size).split(".")[-1])),
-        "pipValue": spec.pip_value,
-        "tickValue": spec.tick_value,
-        "np": spec.np,
-        "initialRatio": args.initial_ratio,
-        "medianSwing": round(median_swing, 4),
-        "fmzPct": round(fmz_pct, 4),
-        "deviation": (
-            f"{args.deviation_pips:g} pips" if args.deviation_pips else f"{args.deviation_pct:g}%"
-        ),
-        "times": [int(b.time.timestamp()) for b in bars],
-        "close": [round(b.close, 6) for b in bars],
-        "high": [round(b.high, 6) for b in bars],
-        "low": [round(b.low, 6) for b in bars],
-        "pivots": [
-            {"i": p.index, "t": int(p.time.timestamp()), "p": round(p.price, 6),
-             "kind": p.kind, "ci": p.confirm_index}
-            for p in pivots
-        ],
-        "envelopes": [
-            {
-                "pi": index_of[id(e.pivot)],
-                "i0": e.start_index, "i1": e.end_index, "dir": e.direction,
-                "fmz": round(e.fmz_price, 6), "imz": round(e.imz_price, 6),
-                "pips": round(e.fmz_pips, 1), "mm": e.maintenance,
-                "asOf": e.margin_as_of.isoformat(),
-                "hit": e.touched(bars),
-            }
-            for e in envelopes
-        ],
-        "prov": None if prov is None else {
-            "i": prov.index, "p": round(prov.price, 6), "kind": prov.kind,
-            "confirmAt": round(prov.confirm_at, 6), "bars": prov.bars_since,
-        },
-        "stats": stats,
-        "caution": caution,
-        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-    }
-
-    blob = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
-    title = f"{args.symbol} {args.timeframe.upper()} — margin zones"
-    html = (
-        TEMPLATE_PATH.read_text(encoding="utf-8")
-        .replace("/*__DATA__*/null", blob)
-        .replace("__TITLE__", title)
-        .replace("/*__STYLE__*/", STYLE_PATH.read_text(encoding="utf-8"))
+    payload = build_payload(
+        args.symbol, args.timeframe, bars, pivots, envelopes, prov, spec,
+        deviation, args.initial_ratio,
     )
+    median_swing, stats = payload["medianSwing"], payload["stats"]
+    sizes = swing_sizes(pivots, as_pct=True)
 
-    stem = default_name(args, spec.code)[:-len(".html")]
     if args.save:
-        # Chart and data together, the way a backtest run directory works.
-        directory = Path(args.out).with_suffix("") if args.out else Path("runs") / stem
-        save_dataset(directory, payload, bars, pivots, envelopes, spec, args, stats)
+        # A timestamped directory, so a re-run never overwrites the evidence —
+        # the same convention backtest runs already use.
+        directory = (
+            Path(args.out).with_suffix("") if args.out
+            else Path("runs") / report_name(args.symbol, args.timeframe, spec.code, deviation)
+        )
+        write_report(directory, payload, bars, pivots, envelopes, spec, args.log)
         out = directory / "chart.html"
     else:
-        out = Path(args.out) if args.out else Path("runs") / f"{stem}.html"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html, encoding="utf-8")
+        # No --save: a scratch view for tuning, on a stable name so iterating
+        # on --deviation-pct does not litter runs/ with near-identical pages.
+        out = Path(args.out) if args.out else Path("runs") / default_name(args, spec.code)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            render_chart(payload, f"{args.symbol} {args.timeframe.upper()} — margin zones"),
+            encoding="utf-8",
+        )
 
     print(
         f"Wrote {out}  ({out.stat().st_size / 1024:,.0f} KB)\n"
