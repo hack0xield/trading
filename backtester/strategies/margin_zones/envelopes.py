@@ -49,6 +49,18 @@ class Envelope:
         """50% MZ — exactly halfway between the boundaries (validation rule 4)."""
         return (self.fmz_price + self.imz_price) / 2.0
 
+    @property
+    def e50_price(self) -> float:
+        """50% Extremum-to-50% MZ level (revised spec §3.5).
+
+        Halfway between the pivot itself and `mid_price` — not a level inside
+        the zone. Since `mid_price = pivot + step * (fmz+imz)/2 * pip_size`,
+        averaging it with the pivot price is algebraically identical to the
+        spec's `pivot ± step * (fmz+imz)/4 * pip_size`, so no separate pip
+        figure is needed here.
+        """
+        return (self.pivot.price + self.mid_price) / 2.0
+
     def level(self, fraction: float) -> float:
         """A price inside the zone: 0% at FMZ, 1.0 at IMZ (§3.4)."""
         return self.fmz_price + (self.imz_price - self.fmz_price) * fraction

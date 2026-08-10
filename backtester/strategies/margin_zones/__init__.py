@@ -27,12 +27,13 @@ from .margins import (
     validate_observation,
 )
 from .report import build_payload, render_chart, report_name, write_report
+from .rollover import RolloverPoint, rollover_points
 
 __all__ = [
     "CONTRACT_DIR", "ContractSpec", "DEFAULT_INITIAL_RATIO", "Envelope",
     "MARGIN_LOG", "MarginLog",
-    "MarginObservation", "MarginZones", "build_envelopes", "build_payload",
-    "compute_zones", "list_specs", "load_spec", "margin_coverage",
-    "render_chart", "report_name", "save_spec", "summarise", "validate_observation",
-    "write_report",
+    "MarginObservation", "MarginZones", "RolloverPoint", "build_envelopes",
+    "build_payload", "compute_zones", "list_specs", "load_spec", "margin_coverage",
+    "render_chart", "report_name", "rollover_points", "save_spec", "summarise",
+    "validate_observation", "write_report",
 ]

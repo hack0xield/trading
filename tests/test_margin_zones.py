@@ -11,7 +11,8 @@ from backtester.indicators.zigzag import (
     Pivot, legs, pivots_known_by, provisional, swing_sizes, zigzag,
 )
 from backtester.strategies.margin_zones import (
-    ContractSpec, MarginLog, MarginObservation, build_envelopes, margin_coverage, summarise,
+    ContractSpec, MarginLog, MarginObservation, build_envelopes, margin_coverage,
+    rollover_points, summarise,
 )
 
 UTC = timezone.utc
@@ -264,6 +265,108 @@ class TestEnvelopes:
 
     def test_summarise_on_nothing(self):
         assert summarise([], []) == {"envelopes": 0}
+
+
+class TestE50Level:
+    """Revised spec §3.5: halfway between the pivot and the 50% MZ midpoint."""
+
+    @pytest.fixture
+    def log(self, tmp_path) -> MarginLog:
+        log = MarginLog(tmp_path / "m.csv")
+        log.add(MarginObservation("6E", date(2023, 1, 1), 2900.0, source="t"))
+        return log
+
+    def test_matches_the_spec_worked_example(self, log):
+        # MM=2900, PP=6.25, NP=2 -> FMZ=232, IMZ=255.2, 50% MZ=243.6,
+        # E50=121.8 pips (spec §6), i.e. 0.01218 at 0.0001 per pip.
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
+        pivots = zigzag(bars, deviation_abs=0.01)
+        low = [e for e in build_envelopes(bars, pivots, spec_6e(), log) if not e.pivot.is_high][0]
+        assert low.e50_price == pytest.approx(low.pivot.price + 0.01218)
+
+    def test_is_halfway_between_pivot_and_mz50(self, log):
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
+        pivots = zigzag(bars, deviation_abs=0.01)
+        for e in build_envelopes(bars, pivots, spec_6e(), log):
+            assert e.e50_price == pytest.approx((e.pivot.price + e.mid_price) / 2)
+
+    def test_a_high_pivots_e50_sits_below_the_pivot_and_outside_the_zone(self, log):
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
+        pivots = zigzag(bars, deviation_abs=0.01)
+        high = [e for e in build_envelopes(bars, pivots, spec_6e(), log) if e.pivot.is_high][0]
+        assert high.e50_price == pytest.approx(high.pivot.price - 0.01218)
+        # E50 sits between the pivot and FMZ, not inside [FMZ, IMZ] — it is
+        # nearer to the pivot than FMZ is.
+        assert high.pivot.price - high.e50_price < high.pivot.price - high.fmz_price
+
+
+class TestRolloverPoints:
+    """Revised spec §5: one daily marker at the last price before T_roll."""
+
+    def m15(self, prices: list[float], start: datetime) -> list[Bar]:
+        return [
+            Bar(time=start + timedelta(minutes=15 * i), open=p, high=p, low=p, close=p, volume=1)
+            for i, p in enumerate(prices)
+        ]
+
+    def test_empty_bars(self):
+        assert rollover_points([], rollover_hour=0, rollover_tz="UTC") == []
+
+    def test_one_point_per_day_using_the_last_bar_before_midnight(self):
+        # 23:00, 23:15, 23:30, 23:45 on day 1, then one bar on day 2 so the
+        # scan reaches day 2's own T_roll -> the 23:45 close is its point.
+        bars = self.m15([10, 11, 12, 13], start=datetime(2024, 1, 1, 23, 0, tzinfo=UTC))
+        bars += self.m15([99], start=datetime(2024, 1, 2, 0, 30, tzinfo=UTC))
+        points = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
+        assert [p.day for p in points] == [date(2024, 1, 2)]
+        assert points[0].price == 13
+        assert points[0].roll_time == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
+        assert points[0].bar_time == datetime(2024, 1, 1, 23, 45, tzinfo=UTC)
+
+    def test_first_day_with_nothing_before_it_gets_no_point(self):
+        # Data starts at day 1's own midnight, so T_roll(day 1) has no bar
+        # before it at all; day 2 does, and must not be skipped too.
+        bars = self.m15([10, 11, 12, 13], start=datetime(2024, 1, 1, 0, 0, tzinfo=UTC))
+        bars += self.m15([99], start=datetime(2024, 1, 2, 0, 30, tzinfo=UTC))
+        points = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
+        assert [p.day for p in points] == [date(2024, 1, 2)]
+        assert points[0].price == 13
+
+    def test_the_bar_at_or_after_roll_time_is_never_used(self):
+        # A bar exactly at midnight belongs to the new session, not the
+        # previous one's rollover price (validation rule 12).
+        bars = self.m15([10, 11], start=datetime(2024, 1, 1, 23, 45, tzinfo=UTC))
+        assert bars[1].time == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
+        points = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
+        day2 = [p for p in points if p.day == date(2024, 1, 2)]
+        assert day2 and day2[0].price == 10          # the 23:45 bar, not the 00:00 one
+
+    def test_weekend_gap_collapses_into_one_point_not_two(self):
+        # Friday bars, then nothing until Sunday night (the realistic FX/CFD
+        # reopen, before Monday's own midnight). Saturday's T_roll finds
+        # Friday's last bar; Sunday's T_roll finds that same bar again (no
+        # new data yet) and must not repeat it; Monday's T_roll finds fresh
+        # Sunday-night data.
+        friday = self.m15([100, 101, 102, 103], start=datetime(2024, 1, 5, 23, 0, tzinfo=UTC))
+        sunday = self.m15(
+            [110, 111, 112, 113, 114, 115, 116, 117], start=datetime(2024, 1, 7, 22, 0, tzinfo=UTC)
+        )
+        monday_anchor = self.m15([120], start=datetime(2024, 1, 8, 0, 0, tzinfo=UTC))
+        points = rollover_points(friday + sunday + monday_anchor, rollover_hour=0, rollover_tz="UTC")
+        assert [p.day for p in points] == [date(2024, 1, 6), date(2024, 1, 8)]
+        assert points[0].price == 103   # Saturday <- Friday 23:45
+        assert points[1].price == 117   # Monday   <- Sunday 23:45, not Friday again
+
+    def test_rollover_tz_shifts_which_bar_is_picked(self):
+        # Break at 00:00 UTC+3 is 21:00 UTC the day before — earlier than the
+        # plain-UTC case, so a different (earlier) bar becomes the price.
+        bars = self.m15([5], start=datetime(2024, 1, 1, 20, 0, tzinfo=UTC))
+        bars += self.m15([10, 11, 12, 13], start=datetime(2024, 1, 1, 22, 0, tzinfo=UTC))
+        bars += self.m15([99], start=datetime(2024, 1, 2, 1, 0, tzinfo=UTC))
+        utc = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
+        shifted = rollover_points(bars, rollover_hour=0, rollover_tz="UTC+3")
+        assert utc[0].price == 13      # last bar before 2024-01-02 00:00 UTC
+        assert shifted[0].price == 5   # last bar before 2024-01-01 21:00 UTC
 
 
 class TestReportName:

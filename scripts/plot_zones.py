@@ -44,6 +44,7 @@ from backtester.strategies.margin_zones import (  # noqa: E402
     margin_coverage,
     render_chart,
     report_name,
+    rollover_points,
     summarise,
     write_report,
 )
@@ -95,6 +96,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--save", action="store_true",
         help="also write pivots.csv, envelopes.csv and summary.json beside the chart",
+    )
+    parser.add_argument(
+        "--no-rollover", action="store_true",
+        help="skip daily CFD rollover points (on by default)",
+    )
+    parser.add_argument(
+        "--rollover-timeframe", default="M15",
+        help="bars to sample the pre-break price from (default M15)",
+    )
+    parser.add_argument(
+        "--rollover-hour", type=int, default=0,
+        help="hour, in --rollover-tz, that the daily break starts (default 0)",
+    )
+    parser.add_argument(
+        "--rollover-tz", default="UTC",
+        help="timezone for --rollover-hour; MT5 bars are broker-server time "
+             "labelled UTC, so 'UTC' means broker midnight (default UTC). "
+             "The terminal has no API for the actual schedule — see rollover.py.",
     )
     parser.add_argument(
         "--out", "-o",
@@ -156,9 +175,18 @@ def main(argv: list[str] | None = None) -> int:
             f"and are drawn without a zone (earliest is {pivots[0].time:%Y-%m-%d})"
         )
 
+    rollover = []
+    if not args.no_rollover:
+        roll_bars = (
+            bars if args.rollover_timeframe.upper() == args.timeframe.upper()
+            else load_bars(args.symbol, args.rollover_timeframe, data=args.data,
+                           start=args.start, end=args.end, validate=False)
+        )
+        rollover = rollover_points(roll_bars, args.rollover_hour, args.rollover_tz)
+
     payload = build_payload(
         args.symbol, args.timeframe, bars, pivots, envelopes, prov, spec,
-        deviation, args.initial_ratio,
+        deviation, args.initial_ratio, rollover,
     )
     median_swing, stats = payload["medianSwing"], payload["stats"]
     sizes = swing_sizes(pivots, as_pct=True)
@@ -170,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.out).with_suffix("") if args.out
             else Path("runs") / report_name(args.symbol, args.timeframe, spec.code, deviation)
         )
-        write_report(directory, payload, bars, pivots, envelopes, spec, args.log)
+        write_report(directory, payload, bars, pivots, envelopes, spec, args.log,
+                     rollover=rollover)
         out = directory / "chart.html"
     else:
         # No --save: a scratch view for tuning, on a stable name so iterating
@@ -194,7 +223,10 @@ def main(argv: list[str] | None = None) -> int:
         f"  FMZ           {stats['avg_fmz_pips']:.0f} pips average, "
         f"from {stats['distinct_margins']} margin reading(s)\n"
         f"  reached FMZ   {stats['reached_fmz']}/{stats['envelopes']} "
-        f"({stats['reached_fmz_pct']:.0f}%)   IMZ {stats['reached_imz_pct']:.0f}%"
+        f"({stats['reached_fmz_pct']:.0f}%)   IMZ {stats['reached_imz_pct']:.0f}%\n"
+        f"  rollover      {len(rollover)} daily points"
+        + (f" (from {args.rollover_timeframe}, break at {args.rollover_hour:02d}:00 "
+           f"{args.rollover_tz})" if rollover else "")
         + (
             f"\n  in progress   unconfirmed {prov.kind} {prov.price:g} "
             f"{prov.bars_since} bars ago; needs {prov.confirm_at:g} to confirm "

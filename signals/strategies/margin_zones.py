@@ -15,6 +15,7 @@ from backtester.strategies.margin_zones import (
     build_envelopes,
     build_payload,
     report_name,
+    rollover_points,
     write_report,
 )
 from backtester.data.loader import load_bars
@@ -32,6 +33,12 @@ class MarginZonesParams(StrategyParams):
     deviation_pct: float = 2.0                  # ZigZag reversal threshold
     margin_log: str = "configs/margins.csv"     # dated maintenance-margin readings
     initial_ratio: float = 1.1                  # IMZ = FMZ * this, when IM is unknown
+    rollover_timeframe: str = "M15"             # bars sampled for the pre-break price
+    rollover_hour: int = 0                      # hour, in rollover_tz, the break starts
+    rollover_tz: str = "UTC"                    # MT5 bars are broker time labelled UTC,
+                                                 # so "UTC" means broker midnight; the
+                                                 # terminal has no API for the real
+                                                 # schedule — see backtester/.../rollover.py
 
 
 @register
@@ -50,12 +57,28 @@ class MarginZonesSignal(SignalStrategy):
         envelopes = build_envelopes(bars, pivots, spec, log, p.initial_ratio, p.contract)
         prov = provisional(bars, deviation_pct=p.deviation_pct, pivots=pivots)
 
+        rollover = []
+        if p.rollover_timeframe == job.timeframe:
+            rollover = rollover_points(bars, p.rollover_hour, p.rollover_tz)
+        else:
+            # A finer timeframe is nice-to-have for the rollover sample, but
+            # not fetched for every symbol; a job must not fail its heartbeat
+            # over it, so this is the one soft-fail spot in evaluate().
+            try:
+                roll_bars = load_bars(job.symbol, p.rollover_timeframe, data=config.data,
+                                      validate=False)
+            except ValueError:
+                roll_bars = None
+            if roll_bars is not None:
+                rollover = rollover_points(roll_bars, p.rollover_hour, p.rollover_tz)
+
         facts = bar_facts(bars, job.timeframe)
         facts.update({
             "pivots": len(pivots),
             "zones": len(envelopes),
             "margin_readings": len({e.maintenance for e in envelopes}),
             "digits": max(2, len(str(spec.pip_size).split(".")[-1])),
+            "rollover_points": len(rollover),
         })
         if pivots:
             facts["last_pivot"] = pivots[-1]
@@ -72,27 +95,30 @@ class MarginZonesSignal(SignalStrategy):
             )
         if prov:
             facts["provisional"] = prov
+        if rollover:
+            facts["last_rollover"] = rollover[-1]
 
         # Held for write_artifacts, so the report is rendered from the very
         # objects the message quoted rather than a second computation.
-        self._state = (bars, pivots, envelopes, prov, spec)
+        self._state = (bars, pivots, envelopes, prov, spec, rollover)
         return facts
 
     def write_artifacts(self, job, config, facts: dict):
         state = getattr(self, "_state", None)
         if state is None:
             return None
-        bars, pivots, envelopes, prov, spec = state
+        bars, pivots, envelopes, prov, spec, rollover = state
         deviation = f"{self.p.deviation_pct:g}%"
         payload = build_payload(
             job.symbol, job.timeframe, bars, pivots, envelopes, prov, spec,
-            deviation, self.p.initial_ratio,
+            deviation, self.p.initial_ratio, rollover,
         )
         directory = Path("runs") / report_name(
             job.symbol, job.timeframe, spec.code, deviation
         )
         return write_report(
-            directory, payload, bars, pivots, envelopes, spec, self.p.margin_log
+            directory, payload, bars, pivots, envelopes, spec, self.p.margin_log,
+            rollover=rollover,
         )
 
     def compose(self, job, facts: dict) -> str:
@@ -128,9 +154,17 @@ class MarginZonesSignal(SignalStrategy):
                 f"(FMZ {zone.fmz_pips:.0f} / IMZ {zone.imz_pips:.0f} pips, "
                 f"MM {zone.maintenance:,.0f} as of {zone.margin_as_of})"
             )
+            lines.append(f"50% Ext-MZ {px(zone.e50_price)}")
             lines.append(
                 "Price      <b>inside the zone</b>" if facts["in_zone"]
                 else f"Price      {facts['distance_to_zone']:.0f} pips from the zone"
+            )
+        roll = facts.get("last_rollover")
+        if roll:
+            lines.append(
+                f"Rollover   {px(roll.price)} on {roll.day} "
+                f"({facts['rollover_points']} points, "
+                f"break {self.p.rollover_hour:02d}:00 {self.p.rollover_tz})"
             )
         prov = facts.get("provisional")
         if prov:

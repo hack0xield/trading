@@ -93,12 +93,32 @@ for (let i = 0; i < N; i++) {
   if (DATA.low[i] < gLo) gLo = DATA.low[i];
   if (DATA.high[i] > gHi) gHi = DATA.high[i];
 }
-for (const e of DATA.envelopes) { gLo = Math.min(gLo, e.imz, e.fmz); gHi = Math.max(gHi, e.imz, e.fmz); }
+for (const e of DATA.envelopes) {
+  gLo = Math.min(gLo, e.imz, e.fmz, e.e50); gHi = Math.max(gHi, e.imz, e.fmz, e.e50);
+}
+for (const r of DATA.rollover) { gLo = Math.min(gLo, r.p); gHi = Math.max(gHi, r.p); }
 { const s = gHi - gLo; gLo -= s * 0.03; gHi += s * 0.03; }
 
 const view = { i0: 0, i1: 0, lo: gLo, hi: gHi, left: 0, w: 0 };
 const y = (p) => PAD + (view.hi - p) / (view.hi - view.lo) * (PLOT_H - 2 * PAD);
 const x = (i) => i * state.px - view.left + state.px / 2;
+
+// Rollover points come from a finer timeframe than the main series, so they
+// need an x position by timestamp rather than by index. Binary search for
+// the bracketing bars and interpolate between their (already index-spaced)
+// x positions — the same weekend/gap compression the rest of the chart uses.
+function xAt(t) {
+  if (t <= DATA.times[0]) return x(0);
+  if (t >= DATA.times[N - 1]) return x(N - 1);
+  let lo = 0, hi = N - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (DATA.times[mid] <= t) lo = mid; else hi = mid;
+  }
+  const t0 = DATA.times[lo], t1 = DATA.times[hi];
+  const frac = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+  return x(lo) + (x(hi) - x(lo)) * frac;
+}
 
 const drawEnv = () => state.filter === "both" || state.filter === "zones";
 const drawZig = () => state.filter === "both" || state.filter === "pivots";
@@ -121,7 +141,7 @@ function measure() {
   if (drawEnv()) {
     for (const e of DATA.envelopes) {
       if (e.i1 < view.i0 || e.i0 > view.i1) continue;
-      lo = Math.min(lo, e.fmz, e.imz); hi = Math.max(hi, e.fmz, e.imz);
+      lo = Math.min(lo, e.fmz, e.imz, e.e50); hi = Math.max(hi, e.fmz, e.imz, e.e50);
     }
   }
   if (!isFinite(lo)) { lo = gLo; hi = gHi; }
@@ -200,6 +220,9 @@ for (const [color, glyph, text] of [
   ["var(--win)", "●", "Low pivot — zone above it: 0% MZ = FMZ, 100% MZ = IMZ"],
   ["var(--loss)", "●", "High pivot — zone below it, same boundaries"],
   ["var(--muted)", "", "Dashed hairline inside a zone = 50% MZ, its midpoint"],
+  ["var(--muted)", "", "Solid hairline nearer the extremum = 50% Extremum-to-50% MZ level"],
+  ...(DATA.rollover.length ? [["var(--text-primary)", "●",
+    "Daily CFD rollover point — last price before the scheduled trading break"]] : []),
   ...(DATA.prov ? [["var(--muted)", "○",
     `Unconfirmed ${DATA.prov.kind} ${px_(DATA.prov.p)} (${DATA.prov.bars} bars ago) — ` +
     `needs ${px_(DATA.prov.confirmAt)} to become a pivot; no zone is drawn from it`]] : []),
@@ -296,6 +319,13 @@ function draw() {
       plot.append(el("line", { x1: x0, y1: (yF + yI) / 2, x2: x1, y2: (yF + yI) / 2,
                                stroke: c, "stroke-width": 1, "stroke-opacity": 0.45,
                                "stroke-dasharray": "3 3" }));
+      // 50% Extremum-to-50% MZ level (§3.5): halfway between the pivot and
+      // the 50% MZ midpoint above, so it sits *outside* the shaded rect, on
+      // the near side toward the extremum — solid, like FMZ/IMZ, so it does
+      // not get lost the way a fine dotted line did.
+      const yE = y(e.e50);
+      plot.append(el("line", { x1: x0, y1: yE, x2: x1, y2: yE,
+                               stroke: c, "stroke-width": 1, "stroke-opacity": 0.5 }));
     }
   }
 
@@ -307,6 +337,17 @@ function draw() {
   for (let i = a; i <= b; i++) line += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.close[i]).toFixed(1);
   plot.append(el("path", { d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
                            "stroke-linejoin": "round", "stroke-linecap": "round" }));
+
+  // Daily CFD rollover points (§5): a standalone marker, not a level — small
+  // and subordinate to price and the ZigZag spine drawn after it.
+  const tA = DATA.times[a], tB = DATA.times[b];
+  for (const r of DATA.rollover) {
+    if (r.t < tA || r.t > tB) continue;
+    plot.append(el("circle", {
+      cx: xAt(r.t), cy: y(r.p), r: 2.5,
+      fill: "var(--text-primary)", "fill-opacity": 0.55,
+    }));
+  }
 
   // ZigZag spine and its pivots.
   if (drawZig()) {

@@ -24,6 +24,7 @@ from ...core.types import Bar
 from .margins import ContractSpec
 from ...data.results import write_rows
 from .envelopes import Envelope, summarise
+from .rollover import RolloverPoint
 from ...indicators.zigzag import Pivot, Provisional, swing_sizes
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
@@ -56,6 +57,7 @@ def build_payload(
     spec: ContractSpec,
     deviation: str,
     initial_ratio: float,
+    rollover: list[RolloverPoint] = (),
 ) -> dict:
     """Everything the chart page needs, as one JSON-serialisable dict."""
     stats = summarise(envelopes, bars)
@@ -102,11 +104,16 @@ def build_payload(
                 "pi": index_of[id(e.pivot)],
                 "i0": e.start_index, "i1": e.end_index, "dir": e.direction,
                 "fmz": round(e.fmz_price, 6), "imz": round(e.imz_price, 6),
+                "e50": round(e.e50_price, 6),
                 "pips": round(e.fmz_pips, 1), "mm": e.maintenance,
                 "asOf": e.margin_as_of.isoformat(),
                 "hit": e.touched(bars),
             }
             for e in envelopes
+        ],
+        "rollover": [
+            {"t": int(r.roll_time.timestamp()), "p": round(r.price, 6), "day": r.day.isoformat()}
+            for r in rollover
         ],
         "prov": None if prov is None else {
             "i": prov.index, "p": round(prov.price, 6), "kind": prov.kind,
@@ -140,6 +147,7 @@ def write_report(
     spec: ContractSpec,
     margin_log: str = "",
     chart: bool = True,
+    rollover: list[RolloverPoint] = (),
 ) -> Path:
     """Write chart.html plus the CSVs the chart was built from."""
     directory = Path(directory)
@@ -169,11 +177,21 @@ def write_report(
             "fmz_pips": round(e.fmz_pips, 2), "imz_pips": round(e.imz_pips, 2),
             "mz_pips": round(e.imz_pips - e.fmz_pips, 2),
             "mz50_price": round(e.mid_price, 6),
+            "e50_price": round(e.e50_price, 6),
             "maintenance": e.maintenance, "margin_as_of": e.margin_as_of.isoformat(),
             "reached_fmz": e.touched(bars), "reached_imz": e.reached_far(bars),
         }
         for e in envelopes
     ])
+
+    if rollover:
+        write_rows(directory / "rollover.csv", [
+            {
+                "day": r.day.isoformat(), "roll_time": r.roll_time.isoformat(),
+                "price": round(r.price, 6), "bar_time": r.bar_time.isoformat(),
+            }
+            for r in rollover
+        ])
 
     summary = {
         "symbol": payload["symbol"],
@@ -196,6 +214,7 @@ def write_report(
             **payload["stats"],
         },
         "provisional": payload["prov"],
+        "rollover": {"points": len(rollover)},
         "margin_log": margin_log,
         "generated": payload["generated"],
     }
