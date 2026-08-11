@@ -4,8 +4,10 @@ Status snapshot of the `margin_zones` strategy: what's implemented, what was
 added most recently, what's deliberately left out, and the assumptions/known
 problems worth knowing before trusting the numbers. Not a spec itself — see
 `MarginZones_revised.md` (base) and
-`MarginZones_revised_with_CFD_rollover_points(1).md` (adds §3.5 and §5, the
-source for the rollover work below) for the actual requirements.
+`MarginZones_revised_with_CFD_rollover_crossings.md` (adds §3.5, §5, and §5.5
+— everything below is now implemented, so this is the file to cite; the
+sibling `..._points(1).md` is now a strict subset of it) for the actual
+requirements.
 
 ---
 
@@ -90,6 +92,35 @@ source for the rollover work below) for the actual requirements.
   `params:` in `signals.yaml` (currently set on `eurusd-heartbeat`:
   `rollover_timeframe: M15`, `rollover_hour: 0`, `rollover_tz: UTC`).
 
+### 1.6 Added this session: Rollover Crossing Events (§5.5)
+
+`RolloverCrossing`, `envelope_at()`, `rollover_crossings()` in `rollover.py`
+
+- Detects when two *consecutive* rollover points sit on strictly opposite
+  sides of the active zone's E50 level — classified **True** when the move
+  is toward the zone (downward for a high/max zone, upward for a low/min
+  zone), **False** when away.
+- `envelope_at(envelopes, bars, t)` resolves which zone was active at a given
+  time, by bar-index range; a rollover point falling in a gap between two
+  zones (a pivot skipped for lacking a margin reading) resolves to no active
+  zone at all, and produces no event.
+- Baseline reset (§5.5.4) is enforced by object identity: a pair only
+  produces an event when `envelope_at()` returns the *same* `Envelope`
+  instance for both points, so a newly confirmed pivot always breaks the
+  chain even if its E50 happens to land near the old one.
+- `max_gap_days` (default 3) stands in for "no crossing across a missing
+  scheduled point" — see §2.6 below for why this is a judgment call, not a
+  spec-given number.
+- Verified against real EURUSD/6E data: 93 events over 2022-07 to 2026-08
+  (69 True, 24 False); spot-checked the first one field-by-field against its
+  source envelope in `envelopes.csv`.
+- Surfaced in `crossings.csv`, the chart (an open ring around the rollover
+  dot — green/`var(--win)` for True, red/`var(--loss)` for False — with a
+  native hover title giving the full prev→current detail), and the Telegram
+  message: a `🔔 <classification> crossing` line, but *only* when the most
+  recently computed rollover point is itself the event's second point — see
+  §2.8 for what "just happened" does and doesn't mean here.
+
 ---
 
 ## 2. Assumptions & known problems
@@ -112,7 +143,9 @@ So there is currently no way to ask the terminal what time XAUUSD's or
 EURUSD's break actually starts. `rollover_hour: 0, rollover_tz: UTC` (broker
 midnight, since bar timestamps are broker-server time labelled UTC) is a
 default, not a verified fact about either broker. If the real break is at a
-different hour, every rollover point is silently reading the wrong bar.
+different hour, every rollover point is silently reading the wrong bar — and
+every crossing event inherits that same error, since it is only ever a
+comparison between two rollover points.
 
 ### 2.2 M15 history is capped well short of the H4/D1 range
 
@@ -140,8 +173,9 @@ dated rows). `build_envelopes()` silently produces zero envelopes for a
 pivot with no covering reading, so **zones cannot currently be drawn for any
 `GC`-backed instrument (XAUUSD) or `6B`-backed one (GBPUSD)** — only EURUSD.
 This isn't a code gap, it's missing input data (CME margin history entered by
-hand, since CME blocks scripted access), but it means the strategy is
-effectively single-instrument right now regardless of what data is fetched.
+hand, since CME blocks scripted access), but it means the strategy — E50,
+rollover points, and crossings alike — is effectively single-instrument right
+now regardless of what bar data is fetched.
 
 ### 2.4 Rollover price falls back to bar Close, never a tick
 
@@ -162,28 +196,47 @@ point where a real trading calendar would say there shouldn't be one, or
 vice versa. Works correctly for the ordinary weekly weekend gap; unverified
 against actual holiday behavior.
 
-### 2.6 Rollover points aren't in the hover tooltip yet
+### 2.6 The crossing "no gap-bridging" rule is a guessed threshold, not a calendar
 
-The dots are drawn on the chart, but hovering near one shows whichever H4 bar
-the crosshair snaps to (bar-index based), not the rollover point's own
-day/price. A weekend rollover point in particular sits in the *compressed*
-gap between Friday's last bar and Monday's first — visually adjacent to both,
-but not independently hoverable. Flagged, not fixed.
+§5.5.4 says a crossing must not be inferred across a missing scheduled
+rollover point, but gives no number. `rollover_crossings()`'s `max_gap_days`
+(default 3) is a judgment call standing in for that: a normal weekend
+collapses to a 2-3 calendar-day span between consecutive *output* rollover
+points (Saturday → Monday, since Sunday dedups away), so a gap that size is
+allowed through; anything wider — an extended holiday run, a real data
+outage — is treated as missing and the baseline resets without producing an
+event. There's no actual trading calendar behind this number, same root cause
+as §2.5.
 
-### 2.7 §5.5 Rollover Crossing Events — not built
+### 2.7 Rollover points still aren't in the *custom* hover tooltip; crossings partly are
 
-The `..._crossings.md` variant adds True/False crossing classification
-against the E50 level; the `..._points(1).md` variant (implemented here)
-doesn't. Deliberately deferred — only the rollover points themselves are
-built this round.
+The dots are drawn on the chart, but hovering near a plain rollover point
+still shows whichever H4 bar the crosshair snaps to (bar-index based), not
+the point's own day/price — unchanged from before. Crossing markers are a
+partial improvement: they carry a native SVG `<title>` (prev→current detail,
+classification, E50 level), so a slow hover shows the browser's own tooltip,
+but this is separate from — and slower/clunkier than — the chart's custom
+pointer-tracking tooltip used everywhere else. Not unified.
 
-### 2.8 Two near-duplicate spec files, code still cites the older one
+### 2.8 The Telegram crossing alert has no cross-run memory
+
+"Just happened" means only "the most recently computed rollover point is
+itself the second half of a crossing pair" — checked fresh on every
+`evaluate()` call, with nothing persisted between scheduled runs. So the
+`🔔` line fires on *every* run of the job while that stays true, not once at
+the moment the crossing is first detected: if the job runs several times
+before the next day's rollover point arrives, the same alert repeats
+verbatim each time. Building genuine edge-triggered "notify once" behavior
+would need a small state file recording the last-alerted day — not present.
+
+### 2.9 Two near-duplicate spec files, code still cites the older, narrower one
 
 `MarginZones_revised_with_CFD_rollover_crossings.md` and
 `MarginZones_revised_with_CFD_rollover_points(1).md` are both untracked, in
-the repo root, and identical except for §5.5. Code docstrings (e.g.
+the repo root, and identical except for §5.5 (now fully implemented, so the
+`_crossings` file is the one that matches the code). Code docstrings (e.g.
 `margins.py`'s `MarginZones` class) still point at `MarginZones_revised.md`,
-the pre-existing tracked spec that predates both. Nothing has been renamed or
-reconciled — if `MarginZones_revised.md` should be superseded by one of the
-two newer files, or the CFD-rollover content folded into it, that's still
-undone.
+the pre-existing tracked spec that predates both and covers neither E50 nor
+rollover. Nothing has been renamed or reconciled — if `MarginZones_revised.md`
+should be superseded, or the CFD-rollover content folded into it, that's
+still undone.

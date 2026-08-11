@@ -1,8 +1,10 @@
-"""Daily CFD Rollover Price Points (revised spec §5).
+"""Daily CFD Rollover Price Points, and their crossings of E50 (revised spec §5).
 
 For every trading day, plot the last valid price before the broker's
 scheduled daily trading break — a standalone chart marker, not a level or a
-signal.
+signal on its own. Consecutive points are then checked for a crossing of the
+active zone's 50% Extremum-to-50% MZ level (§5.5), classified True (moves
+toward the Margin Zone) or False (moves away).
 
 The break's actual start time can't be read from the terminal: the
 `MetaTrader5` Python package wraps `symbol_info()` but not
@@ -20,6 +22,7 @@ from datetime import date, datetime, timedelta
 
 from ...core.types import Bar
 from ...utils.timeutil import UTC, get_tz
+from .envelopes import Envelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,3 +82,93 @@ def rollover_points(
             last_index = index
         day += timedelta(days=1)
     return out
+
+
+def envelope_at(envelopes: list[Envelope], bars: list[Bar], t: datetime) -> Envelope | None:
+    """Which Margin Zone was active at time `t` — `None` outside any coverage.
+
+    `envelopes` is chronological, so the first one whose bar-index range
+    brackets `t` is the answer; the *last* envelope has no real upper bound
+    (`end_index` is just the final bar in the dataset, not a boundary set by
+    a following pivot), so it is treated as open-ended. A pivot skipped for
+    lacking a margin reading (`build_envelopes`) leaves a real gap between
+    its neighbours' ranges, which correctly resolves to `None` here rather
+    than to either neighbour.
+    """
+    for i, e in enumerate(envelopes):
+        start = bars[e.start_index].time
+        if t < start:
+            return None
+        if i == len(envelopes) - 1 or t < bars[e.end_index].time:
+            return e
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class RolloverCrossing:
+    """A rollover-to-rollover crossing of the 50% Extremum-to-50% MZ level (§5.5).
+
+    Timestamped on `current` — per §5.5.3, the pair only confirms once the
+    second price is known. `envelope` is the active Margin Zone the pair was
+    checked against — kept so a caller can trace an event back to the pivot
+    that produced it (e.g. for a table row) without re-deriving it.
+    """
+
+    previous: RolloverPoint
+    current: RolloverPoint
+    envelope: Envelope
+    e_level: float
+    direction: str          # "up" or "down"
+    classification: str     # "True" or "False"
+
+
+def rollover_crossings(
+    rollover: list[RolloverPoint],
+    envelopes: list[Envelope],
+    bars: list[Bar],
+    max_gap_days: int = 3,
+) -> list[RolloverCrossing]:
+    """Detect §5.5 crossing events between consecutive rollover points.
+
+    A pair produces an event only when both points sit under the *same*
+    active Margin Zone instance (§5.5.4) — checked by object identity, so a
+    zone recalculated at the next pivot resets the baseline even if the new
+    E_level happens to land close to the old one. The first rollover point
+    under a new or recalculated zone can never itself be the second half of
+    an event.
+
+    `max_gap_days` stands in for the same rule's "no crossing across a
+    missing scheduled point": `rollover_points` collapses a weekend into one
+    skipped day, so consecutive *output* points routinely span 2-3 calendar
+    days without that being a data gap. A wider span — a holiday run or an
+    actual feed outage — is treated as missing data instead, exactly as a
+    single missing weekday would be, since there is no trading calendar here
+    to tell the two apart directly (see `MarginZones_spec.md`).
+
+    A rollover price exactly equal to `e_level` never produces an event
+    (validation rule 17): both sides of the comparison must be strictly
+    nonzero and of opposite sign.
+    """
+    events: list[RolloverCrossing] = []
+    prev: RolloverPoint | None = None
+    prev_env: Envelope | None = None
+    for point in rollover:
+        env = envelope_at(envelopes, bars, point.roll_time)
+        if (
+            prev is not None
+            and env is not None
+            and env is prev_env
+            and (point.day - prev.day).days <= max_gap_days
+        ):
+            e_level = env.e50_price
+            a, b = prev.price - e_level, point.price - e_level
+            if a * b < 0:
+                direction = "up" if point.price > prev.price else "down"
+                true_direction = "down" if env.direction < 0 else "up"
+                events.append(RolloverCrossing(
+                    previous=prev, current=point, envelope=env, e_level=e_level,
+                    direction=direction,
+                    classification="True" if direction == true_direction else "False",
+                ))
+        prev, prev_env = point, env
+    return events

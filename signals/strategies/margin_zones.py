@@ -15,6 +15,7 @@ from backtester.strategies.margin_zones import (
     build_envelopes,
     build_payload,
     report_name,
+    rollover_crossings,
     rollover_points,
     write_report,
 )
@@ -72,6 +73,11 @@ class MarginZonesSignal(SignalStrategy):
             if roll_bars is not None:
                 rollover = rollover_points(roll_bars, p.rollover_hour, p.rollover_tz)
 
+        # Crossings are checked against the zone timeframe's own bars (`bars`,
+        # not `roll_bars`), since `envelope_at` resolves a rollover time to an
+        # active zone via H4 bar-index boundaries.
+        crossings = rollover_crossings(rollover, envelopes, bars) if rollover else []
+
         facts = bar_facts(bars, job.timeframe)
         facts.update({
             "pivots": len(pivots),
@@ -97,28 +103,36 @@ class MarginZonesSignal(SignalStrategy):
             facts["provisional"] = prov
         if rollover:
             facts["last_rollover"] = rollover[-1]
+        facts["crossings"] = len(crossings)
+        # "Just happened": the most recent rollover point is itself the
+        # second half of a crossing pair, not merely that a crossing exists
+        # somewhere in the history. Fires on every run while it stays the
+        # latest point — there is no cross-run state to suppress a repeat
+        # once the next day's point arrives without one of its own.
+        if crossings and rollover and crossings[-1].current is rollover[-1]:
+            facts["latest_crossing"] = crossings[-1]
 
         # Held for write_artifacts, so the report is rendered from the very
         # objects the message quoted rather than a second computation.
-        self._state = (bars, pivots, envelopes, prov, spec, rollover)
+        self._state = (bars, pivots, envelopes, prov, spec, rollover, crossings)
         return facts
 
     def write_artifacts(self, job, config, facts: dict):
         state = getattr(self, "_state", None)
         if state is None:
             return None
-        bars, pivots, envelopes, prov, spec, rollover = state
+        bars, pivots, envelopes, prov, spec, rollover, crossings = state
         deviation = f"{self.p.deviation_pct:g}%"
         payload = build_payload(
             job.symbol, job.timeframe, bars, pivots, envelopes, prov, spec,
-            deviation, self.p.initial_ratio, rollover,
+            deviation, self.p.initial_ratio, rollover, crossings,
         )
         directory = Path("runs") / report_name(
             job.symbol, job.timeframe, spec.code, deviation
         )
         return write_report(
             directory, payload, bars, pivots, envelopes, spec, self.p.margin_log,
-            rollover=rollover,
+            rollover=rollover, crossings=crossings,
         )
 
     def compose(self, job, facts: dict) -> str:
@@ -165,6 +179,14 @@ class MarginZonesSignal(SignalStrategy):
                 f"Rollover   {px(roll.price)} on {roll.day} "
                 f"({facts['rollover_points']} points, "
                 f"break {self.p.rollover_hour:02d}:00 {self.p.rollover_tz})"
+            )
+        crossing = facts.get("latest_crossing")
+        if crossing:
+            lines.append(
+                f"🔔 <b>{crossing.classification} crossing</b> — rollover moved "
+                f"{crossing.direction} through the 50% Ext-MZ level ({px(crossing.e_level)}): "
+                f"{crossing.previous.day} {px(crossing.previous.price)} → "
+                f"{crossing.current.day} {px(crossing.current.price)}"
             )
         prov = facts.get("provisional")
         if prov:

@@ -44,6 +44,7 @@ from backtester.strategies.margin_zones import (  # noqa: E402
     margin_coverage,
     render_chart,
     report_name,
+    rollover_crossings,
     rollover_points,
     summarise,
     write_report,
@@ -175,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             f"and are drawn without a zone (earliest is {pivots[0].time:%Y-%m-%d})"
         )
 
-    rollover = []
+    rollover, crossings = [], []
     if not args.no_rollover:
         roll_bars = (
             bars if args.rollover_timeframe.upper() == args.timeframe.upper()
@@ -183,10 +184,11 @@ def main(argv: list[str] | None = None) -> int:
                            start=args.start, end=args.end, validate=False)
         )
         rollover = rollover_points(roll_bars, args.rollover_hour, args.rollover_tz)
+        crossings = rollover_crossings(rollover, envelopes, bars)
 
     payload = build_payload(
         args.symbol, args.timeframe, bars, pivots, envelopes, prov, spec,
-        deviation, args.initial_ratio, rollover,
+        deviation, args.initial_ratio, rollover, crossings,
     )
     median_swing, stats = payload["medianSwing"], payload["stats"]
     sizes = swing_sizes(pivots, as_pct=True)
@@ -199,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             else Path("runs") / report_name(args.symbol, args.timeframe, spec.code, deviation)
         )
         write_report(directory, payload, bars, pivots, envelopes, spec, args.log,
-                     rollover=rollover)
+                     rollover=rollover, crossings=crossings)
         out = directory / "chart.html"
     else:
         # No --save: a scratch view for tuning, on a stable name so iterating
@@ -227,6 +229,12 @@ def main(argv: list[str] | None = None) -> int:
         f"  rollover      {len(rollover)} daily points"
         + (f" (from {args.rollover_timeframe}, break at {args.rollover_hour:02d}:00 "
            f"{args.rollover_tz})" if rollover else "")
+        + (
+            f"\n  crossings     {len(crossings)} "
+            f"({sum(1 for c in crossings if c.classification == 'True')} True, "
+            f"{sum(1 for c in crossings if c.classification == 'False')} False)"
+            if crossings else ""
+        )
         + (
             f"\n  in progress   unconfirmed {prov.kind} {prov.price:g} "
             f"{prov.bars_since} bars ago; needs {prov.confirm_at:g} to confirm "

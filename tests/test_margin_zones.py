@@ -11,8 +11,8 @@ from backtester.indicators.zigzag import (
     Pivot, legs, pivots_known_by, provisional, swing_sizes, zigzag,
 )
 from backtester.strategies.margin_zones import (
-    ContractSpec, MarginLog, MarginObservation, build_envelopes, margin_coverage,
-    rollover_points, summarise,
+    ContractSpec, Envelope, MarginLog, MarginObservation, RolloverPoint, build_envelopes,
+    envelope_at, margin_coverage, rollover_crossings, rollover_points, summarise,
 )
 
 UTC = timezone.utc
@@ -367,6 +367,178 @@ class TestRolloverPoints:
         shifted = rollover_points(bars, rollover_hour=0, rollover_tz="UTC+3")
         assert utc[0].price == 13      # last bar before 2024-01-02 00:00 UTC
         assert shifted[0].price == 5   # last bar before 2024-01-01 21:00 UTC
+
+
+class TestEnvelopeAt:
+    """Which Margin Zone was active at a given time — the crossing engine's lookup."""
+
+    def envelope(self, direction: int, start_index: int, end_index: int) -> Envelope:
+        pivot = Pivot(
+            index=start_index, time=T0 + timedelta(hours=4 * start_index), price=100.0,
+            kind="high" if direction < 0 else "low",
+            confirm_index=start_index + 1, confirm_time=T0,
+        )
+        return Envelope(
+            pivot=pivot, start_index=start_index, end_index=end_index, direction=direction,
+            fmz_price=90.0, imz_price=80.0, fmz_pips=10.0, imz_pips=20.0,
+            maintenance=1000.0, margin_as_of=date(2024, 1, 1),
+        )
+
+    def test_before_any_coverage_is_none(self):
+        bars = ramp([1.0] * 10)
+        env = self.envelope(-1, start_index=2, end_index=6)
+        assert envelope_at([env], bars, bars[0].time) is None
+
+    def test_within_range_returns_the_envelope(self):
+        bars = ramp([1.0] * 10)
+        env = self.envelope(-1, start_index=2, end_index=6)
+        assert envelope_at([env], bars, bars[2].time) is env    # inclusive start
+        assert envelope_at([env], bars, bars[5].time) is env
+
+    def test_at_its_own_end_index_is_no_longer_covered(self):
+        # end_index is the next pivot's own bar — it belongs to whatever
+        # comes after, not to this envelope. A second envelope has to be
+        # present, or the "last envelope is open-ended" rule below would
+        # make this one open-ended too.
+        bars = ramp([1.0] * 10)
+        env = self.envelope(-1, start_index=2, end_index=6)
+        following = self.envelope(-1, start_index=6, end_index=9)
+        assert envelope_at([env, following], bars, bars[6].time) is following
+
+    def test_a_gap_between_envelopes_resolves_to_none(self):
+        # Simulates a pivot skipped for lacking a margin reading: envelope A
+        # ends at bar 6, envelope B only starts at bar 7 — bar 6 itself is
+        # covered by neither.
+        bars = ramp([1.0] * 10)
+        a = self.envelope(-1, start_index=2, end_index=6)
+        b = self.envelope(-1, start_index=7, end_index=9)
+        assert envelope_at([a, b], bars, bars[6].time) is None
+        assert envelope_at([a, b], bars, bars[7].time) is b
+
+    def test_the_last_envelope_is_open_ended(self):
+        # Its end_index is just the last bar in the dataset, not a boundary
+        # set by a following pivot — there is no "next" to close it off.
+        bars = ramp([1.0] * 10)
+        env = self.envelope(-1, start_index=7, end_index=9)
+        assert envelope_at([env], bars, bars[9].time) is env
+        assert envelope_at([env], bars, bars[9].time + timedelta(days=365)) is env
+
+    def test_no_envelopes_is_none(self):
+        bars = ramp([1.0] * 10)
+        assert envelope_at([], bars, bars[0].time) is None
+
+
+class TestRolloverCrossings:
+    """§5.5: rollover-to-rollover crossings of the 50% Extremum-to-50% MZ level."""
+
+    def envelope(self, direction: int, start_index: int = 0, end_index: int = 29) -> Envelope:
+        pivot = Pivot(
+            index=start_index, time=T0, price=100.0,
+            kind="high" if direction < 0 else "low",
+            confirm_index=start_index + 1, confirm_time=T0,
+        )
+        # fmz/imz chosen so mid_price = (fmz+imz)/2 = 80, e50 = (100+80)/2 = 90,
+        # for a "high" envelope; a "low" one is the mirror image (e50 = 110).
+        fmz, imz = (90.0, 70.0) if direction < 0 else (110.0, 130.0)
+        return Envelope(
+            pivot=pivot, start_index=start_index, end_index=end_index, direction=direction,
+            fmz_price=fmz, imz_price=imz, fmz_pips=10.0, imz_pips=30.0,
+            maintenance=1000.0, margin_as_of=date(2024, 1, 1),
+        )
+
+    def rp(self, day_offset: int, price: float, hour: int = 0) -> RolloverPoint:
+        day = date(2024, 1, 1) + timedelta(days=day_offset)
+        roll_time = datetime(day.year, day.month, day.day, hour, tzinfo=UTC)
+        return RolloverPoint(day=day, roll_time=roll_time, price=price,
+                             bar_time=roll_time - timedelta(minutes=15))
+
+    def test_downward_crossing_of_a_max_zone_is_true(self):
+        # Max zone (direction=-1): the zone sits below E_level, so a downward
+        # crossing moves price toward it.
+        env = self.envelope(-1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price + 5), self.rp(2, env.e50_price - 5)]
+        events = rollover_crossings(points, [env], bars)
+        assert len(events) == 1
+        assert events[0].direction == "down"
+        assert events[0].classification == "True"
+        assert events[0].current is points[1]
+        assert events[0].e_level == pytest.approx(env.e50_price)
+
+    def test_upward_crossing_of_a_max_zone_is_false(self):
+        env = self.envelope(-1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price - 5), self.rp(2, env.e50_price + 5)]
+        events = rollover_crossings(points, [env], bars)
+        assert len(events) == 1
+        assert events[0].direction == "up"
+        assert events[0].classification == "False"
+
+    def test_upward_crossing_of_a_min_zone_is_true(self):
+        # Min zone (direction=+1): the zone sits above E_level, so an upward
+        # crossing moves price toward it.
+        env = self.envelope(1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price - 5), self.rp(2, env.e50_price + 5)]
+        events = rollover_crossings(points, [env], bars)
+        assert len(events) == 1
+        assert events[0].direction == "up"
+        assert events[0].classification == "True"
+
+    def test_downward_crossing_of_a_min_zone_is_false(self):
+        env = self.envelope(1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price + 5), self.rp(2, env.e50_price - 5)]
+        events = rollover_crossings(points, [env], bars)
+        assert len(events) == 1
+        assert events[0].classification == "False"
+
+    def test_no_event_when_both_points_are_on_the_same_side(self):
+        env = self.envelope(-1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price + 5), self.rp(2, env.e50_price + 3)]
+        assert rollover_crossings(points, [env], bars) == []
+
+    def test_no_event_when_a_point_sits_exactly_on_the_level(self):
+        # Validation rule 17: equal-to-level does not count as "opposite sides."
+        env = self.envelope(-1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price), self.rp(2, env.e50_price - 5)]
+        assert rollover_crossings(points, [env], bars) == []
+
+    def test_baseline_resets_across_a_new_envelope(self):
+        # Two envelopes, back to back. A crossing entirely inside envelope A
+        # fires; the transition into B does not, even though it also crosses
+        # numerically; a fresh crossing entirely inside B fires again.
+        bars = ramp([1.0] * 30)
+        a = self.envelope(-1, start_index=0, end_index=16)
+        b = self.envelope(-1, start_index=16, end_index=29)
+        points = [
+            self.rp(1, a.e50_price + 5, hour=0),                            # in A (t=T0+24h)
+            self.rp(2, a.e50_price - 5, hour=0),                            # in A (t=T0+48h) -> event 1
+            self.rp(3, b.e50_price + 5, hour=22),                           # in B (t=T0+70h)
+            self.rp(4, b.e50_price - 5, hour=22),                           # in B (t=T0+94h) -> event 2
+        ]
+        assert envelope_at([a, b], bars, points[1].roll_time) is a
+        assert envelope_at([a, b], bars, points[2].roll_time) is b
+
+        events = rollover_crossings(points, [a, b], bars)
+        assert len(events) == 2
+        assert events[0].current is points[1]
+        assert events[1].current is points[3]
+
+    def test_a_wide_gap_is_not_bridged(self):
+        env = self.envelope(-1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price + 5), self.rp(11, env.e50_price - 5)]
+        assert rollover_crossings(points, [env], bars, max_gap_days=3) == []
+
+    def test_a_weekend_sized_gap_is_bridged(self):
+        env = self.envelope(-1)
+        bars = ramp([1.0] * 30)
+        points = [self.rp(1, env.e50_price + 5), self.rp(3, env.e50_price - 5)]
+        events = rollover_crossings(points, [env], bars, max_gap_days=3)
+        assert len(events) == 1
 
 
 class TestReportName:

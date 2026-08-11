@@ -65,6 +65,22 @@
     </div>
   </details>
 
+  <details id="crossingsSection">
+    <summary>Rollover crossing events — every True/False crossing of the 50% Ext-MZ level</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Zone</th><th>Extreme at</th><th>Extreme price</th>
+            <th>Prev rollover</th><th>This rollover</th>
+            <th>50% Ext-MZ</th><th>Direction</th><th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="ctbody"></tbody>
+      </table>
+    </div>
+  </details>
+
   <p class="foot" id="foot"></p>
 </div>
 </div>
@@ -223,6 +239,10 @@ for (const [color, glyph, text] of [
   ["var(--muted)", "", "Solid hairline nearer the extremum = 50% Extremum-to-50% MZ level"],
   ...(DATA.rollover.length ? [["var(--text-primary)", "●",
     "Daily CFD rollover point — last price before the scheduled trading break"]] : []),
+  ...(DATA.crossings.length ? [
+    ["var(--win)", "◎", "True crossing — rollover moved through the 50% Ext-MZ level toward the zone"],
+    ["var(--loss)", "◎", "False crossing — rollover moved through it away from the zone"],
+  ] : []),
   ...(DATA.prov ? [["var(--muted)", "○",
     `Unconfirmed ${DATA.prov.kind} ${px_(DATA.prov.p)} (${DATA.prov.bars} bars ago) — ` +
     `needs ${px_(DATA.prov.confirmAt)} to become a pivot; no zone is drawn from it`]] : []),
@@ -349,6 +369,26 @@ function draw() {
     }));
   }
 
+  // Rollover crossing events (§5.5): a ring around the second rollover point
+  // in the pair, colour-coded True/False, on top of the plain dot above.
+  for (const c of DATA.crossings) {
+    if (c.t < tA || c.t > tB) continue;
+    const ring = el("circle", {
+      cx: xAt(c.t), cy: y(c.p), r: 5.5, fill: "none",
+      stroke: c.cls === "True" ? "var(--win)" : "var(--loss)", "stroke-width": 1.75,
+      // fill:none means only the stroke itself is hit-testable by default
+      // (pointer-events: visiblePainted) — a ~1.75px ring is nearly
+      // impossible to hover precisely, which is why the <title> below
+      // never seemed to fire. "all" makes the whole disc hoverable.
+      "pointer-events": "all",
+    });
+    ring.append(el("title", {}));
+    ring.lastChild.textContent =
+      `${c.cls} crossing (${c.dir}) — rollover ${dt(c.prevT)} ${px_(c.prevP)} -> ` +
+      `${c.day} ${px_(c.p)}, 50% Ext-MZ level ${px_(c.e50)}`;
+    plot.append(ring);
+  }
+
   // ZigZag spine and its pivots.
   if (drawZig()) {
     const near = DATA.pivots.filter((p) => p.i >= a - 400 && p.i <= b + 400);
@@ -413,6 +453,7 @@ function draw() {
   $("count").textContent =
     `${drawn} zone(s) on screen · ${DATA.envelopes.length} of ${DATA.pivots.length} pivots have margin data`;
   buildTable();
+  buildCrossingsTable();
 }
 
 function buildTable() {
@@ -434,6 +475,36 @@ function buildTable() {
       [e ? e.pips.toFixed(0) : "—", ""],
       [e ? e.mm.toLocaleString("en-US") : "—", ""],
       [e ? (e.hit ? "yes" : "no") : "—", e && e.hit ? "up" : ""],
+    ]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.append(td);
+    }
+    tb.append(tr);
+  });
+}
+
+function buildCrossingsTable() {
+  const section = $("crossingsSection");
+  section.style.display = DATA.crossings.length ? "" : "none";
+  if (!DATA.crossings.length) return;
+
+  const tb = $("ctbody");
+  tb.innerHTML = "";
+  DATA.crossings.forEach((c, k) => {
+    const p = DATA.pivots[c.pi];
+    const tr = document.createElement("tr");
+    for (const [text, cls] of [
+      [String(k + 1), ""],
+      [p.kind, p.kind === "low" ? "up" : "down"],
+      [dt(p.t), ""],
+      [px_(p.p), ""],
+      [`${c.prevDay}  ${px_(c.prevP)}`, ""],
+      [`${c.day}  ${px_(c.p)}`, ""],
+      [px_(c.e50), ""],
+      [c.dir, ""],
+      [c.cls, c.cls === "True" ? "up" : "down"],
     ]) {
       const td = document.createElement("td");
       td.textContent = text;
@@ -492,6 +563,21 @@ $("scroller").addEventListener("pointermove", (ev) => {
       tip.append(row(null, `${px_(e.fmz)} → ${px_(e.imz)}`, `FMZ→IMZ (${e.pips.toFixed(0)} pips)`));
       tip.append(row(null, e.mm.toLocaleString("en-US"), `MM as of ${e.asOf}`));
     }
+  }
+
+  // The hovered bar's own calendar day, not its exact timestamp — a
+  // crossing sits at a rollover time (often between bars, or off in the
+  // weekend gap via xAt()), so matching by day is what actually lines it
+  // up with the bar the mouse is over.
+  const cross = DATA.crossings.find((c) => c.day === day(DATA.times[i]));
+  if (cross) {
+    tip.append(document.createElement("hr"));
+    tip.append(row(
+      cross.cls === "True" ? "var(--win)" : "var(--loss)",
+      `${cross.cls} (${cross.dir})`, "rollover crossing",
+    ));
+    tip.append(row(null, px_(cross.e50), "50% Ext-MZ level"));
+    tip.append(row(null, `${px_(cross.prevP)} → ${px_(cross.p)}`, "prev → this rollover"));
   }
   tip.style.opacity = "1";
   tip.style.left = Math.min(ev.clientX + 16, window.innerWidth - tip.offsetWidth - 10) + "px";

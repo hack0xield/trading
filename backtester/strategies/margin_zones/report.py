@@ -24,7 +24,7 @@ from ...core.types import Bar
 from .margins import ContractSpec
 from ...data.results import write_rows
 from .envelopes import Envelope, summarise
-from .rollover import RolloverPoint
+from .rollover import RolloverCrossing, RolloverPoint
 from ...indicators.zigzag import Pivot, Provisional, swing_sizes
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
@@ -58,6 +58,7 @@ def build_payload(
     deviation: str,
     initial_ratio: float,
     rollover: list[RolloverPoint] = (),
+    crossings: list[RolloverCrossing] = (),
 ) -> dict:
     """Everything the chart page needs, as one JSON-serialisable dict."""
     stats = summarise(envelopes, bars)
@@ -115,6 +116,18 @@ def build_payload(
             {"t": int(r.roll_time.timestamp()), "p": round(r.price, 6), "day": r.day.isoformat()}
             for r in rollover
         ],
+        "crossings": [
+            {
+                "pi": index_of[id(c.envelope.pivot)],
+                "t": int(c.current.roll_time.timestamp()), "p": round(c.current.price, 6),
+                "day": c.current.day.isoformat(), "e50": round(c.e_level, 6),
+                "dir": c.direction, "cls": c.classification,
+                "prevT": int(c.previous.roll_time.timestamp()),
+                "prevP": round(c.previous.price, 6),
+                "prevDay": c.previous.day.isoformat(),
+            }
+            for c in crossings
+        ],
         "prov": None if prov is None else {
             "i": prov.index, "p": round(prov.price, 6), "kind": prov.kind,
             "confirmAt": round(prov.confirm_at, 6), "bars": prov.bars_since,
@@ -148,6 +161,7 @@ def write_report(
     margin_log: str = "",
     chart: bool = True,
     rollover: list[RolloverPoint] = (),
+    crossings: list[RolloverCrossing] = (),
 ) -> Path:
     """Write chart.html plus the CSVs the chart was built from."""
     directory = Path(directory)
@@ -193,6 +207,20 @@ def write_report(
             for r in rollover
         ])
 
+    if crossings:
+        write_rows(directory / "crossings.csv", [
+            {
+                "pivot_n": index_of[id(c.envelope.pivot)], "kind": c.envelope.pivot.kind,
+                "pivot_time": c.envelope.pivot.time.isoformat(),
+                "pivot_price": c.envelope.pivot.price,
+                "prev_day": c.previous.day.isoformat(), "prev_price": round(c.previous.price, 6),
+                "day": c.current.day.isoformat(), "price": round(c.current.price, 6),
+                "e50_level": round(c.e_level, 6), "direction": c.direction,
+                "classification": c.classification,
+            }
+            for c in crossings
+        ])
+
     summary = {
         "symbol": payload["symbol"],
         "timeframe": payload["timeframe"],
@@ -215,6 +243,11 @@ def write_report(
         },
         "provisional": payload["prov"],
         "rollover": {"points": len(rollover)},
+        "crossings": {
+            "count": len(crossings),
+            "true": sum(1 for c in crossings if c.classification == "True"),
+            "false": sum(1 for c in crossings if c.classification == "False"),
+        },
         "margin_log": margin_log,
         "generated": payload["generated"],
     }
