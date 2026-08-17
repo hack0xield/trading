@@ -19,6 +19,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,12 +78,27 @@ def refresh(job: Job, config: SignalConfig, timeout: int = 900) -> str:
     ]
     try:
         for command in (fetch, convert):
-            done = subprocess.run(
-                command, cwd=ROOT, capture_output=True, text=True, timeout=timeout
-            )
-            if done.returncode != 0:
-                tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
-                return f"failed ({Path(command[0]).name}: {tail[0][:120]})"
+            # Not capture_output=True: that pipes stdout/stderr, and a pipe
+            # only reports EOF once *every* process holding its write end
+            # closes it. fetch-mt5.sh's mt5.initialize() can auto-launch the
+            # MT5 terminal as a side effect if it is not already running,
+            # and that terminal inherits the pipe (Wine's CreateProcess
+            # inherits stdio handles by default) — then holds it open for as
+            # long as it keeps running, which is indefinitely, since it is a
+            # GUI app with no reason to exit. subprocess.run() then blocks
+            # forever waiting for an EOF that only comes from closing every
+            # holder, not just this command's own (already-exited) process.
+            # A temp file has no such multi-writer EOF semantics: the parent
+            # only needs its direct child to exit, which it already does.
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as out:
+                done = subprocess.run(
+                    command, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT,
+                    text=True, timeout=timeout,
+                )
+                if done.returncode != 0:
+                    out.seek(0)
+                    tail = out.read().strip().splitlines()[-1:] or ["no output"]
+                    return f"failed ({Path(command[0]).name}: {tail[0][:120]})"
         return "fetched"
     except subprocess.TimeoutExpired:
         return f"failed (timed out after {timeout}s)"

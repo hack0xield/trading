@@ -13,9 +13,14 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Documents/trading
-# MetaTrader is a GUI app under Wine and needs a display. :1 is the desktop
-# session; for headless operation run Xvfb and point this at that instead.
-Environment=DISPLAY=:1
+# MetaTrader is a GUI app under Wine and needs a display. Match this to the
+# desktop session's actual DISPLAY (run `echo $DISPLAY` while logged in —
+# :0 is common but not guaranteed); getting it wrong doesn't fail fast, it
+# hangs — Wine can't open a window on a display that isn't there, so the
+# auto-launched terminal never authorizes and mt5.initialize() polls for a
+# terminal that will never become ready. For headless operation run Xvfb and
+# point this at that instead.
+Environment=DISPLAY=:0
 Environment=WINEPREFIX=%h/.mt5
 Environment=WINEDEBUG=-all
 ExecStart=%h/Documents/trading/.venv/bin/python scripts/run_signals.py --send --quiet
