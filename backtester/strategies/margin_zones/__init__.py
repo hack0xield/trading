@@ -8,7 +8,7 @@ from `indicators/`.
 Both execution strategies and analysis-only tools for margin zones live here.
 If a second classification of margin-zone strategy appears, split then.
 
-See `MarginZones_revised.md` for the specification this implements.
+See `impl_spec/MarginZones_revised.md` for the specification this implements.
 """
 
 from .approach25 import Senior25Params, Senior25Strategy, tag_for

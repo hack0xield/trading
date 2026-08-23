@@ -1,6 +1,6 @@
 """Senior H4 extremums and the 25% Control Zone level they project.
 
-Implements `H4 Senior Extremum - 25% Control Zone Approach Pattern.pdf`, which
+Implements `impl_spec/H4 Senior Extremum 25% Control Zone Approach Pattern.pdf`, which
 sits on top of the machinery already here: ZigZag pivots from `indicators/`,
 FMZ from `margins.py`. Three stages, in order:
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw margin-zone envelopes over price — steps 1-5 of `Margin Zones.md`.
+"""Draw margin-zone envelopes over price — steps 1-5 of `impl_spec/Margin Zones.md`.
 
     scripts/plot_zones.py --symbol EURUSD --timeframe H4 --contract 6E \
         --start 2023-07-01 --deviation-pct 1.0

@@ -1,6 +1,6 @@
 """Margin-zone envelopes projected from swing pivots.
 
-Step 5 of `Margin Zones.md`: draw the [FMZ, IMZ] band from every H4 extremum,
+Step 5 of `impl_spec/Margin Zones.md`: draw the [FMZ, IMZ] band from every H4 extremum,
 recalculating at each new pivot.
 
 The band is projected *away* from the extreme — upward from a low, downward

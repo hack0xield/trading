@@ -51,7 +51,7 @@ That is the null hypothesis behaving exactly as it should.
 
 ## The senior-extremum strategy
 
-`H4 Senior Extremum - 25% Control Zone Approach Pattern.pdf` as a run. A ZigZag
+`impl_spec/H4 Senior Extremum 25% Control Zone Approach Pattern.pdf` as a run. A ZigZag
 high that dominates the nearest high on each side (`H-1 < H0 > H+1`) anchors a
 level a quarter of the way toward the margin zone's near boundary, and the
 first candle to come back within 10% of that distance is the signal.

@@ -143,7 +143,7 @@ def rollover_crossings(
     days without that being a data gap. A wider span — a holiday run or an
     actual feed outage — is treated as missing data instead, exactly as a
     single missing weekday would be, since there is no trading calendar here
-    to tell the two apart directly (see `MarginZones_spec.md`).
+    to tell the two apart directly (see `impl_spec/MarginZones_spec.md`).
 
     A rollover price exactly equal to `e_level` never produces an event
     (validation rule 17): both sides of the comparison must be strictly
