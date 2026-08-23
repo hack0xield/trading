@@ -24,6 +24,7 @@ from .margins import (
     DEFAULT_INITIAL_RATIO,
     ContractSpec,
     MarginLog,
+    MarginZones,
     compute_zones,
 )
 from ...indicators.zigzag import Pivot
@@ -94,6 +95,34 @@ class Envelope:
         return False
 
 
+def envelope_from(
+    pivot: Pivot,
+    zones: MarginZones,
+    pip_size: float,
+    start_index: int,
+    end_index: int,
+) -> Envelope:
+    """Project one band from a pivot. The only place this arithmetic lives.
+
+    Both the batch builder below and the streaming tracker a strategy runs on
+    go through here, so a zone drawn on a chart and a zone traded against
+    cannot come out at different prices.
+    """
+    step = pivot.direction
+    return Envelope(
+        pivot=pivot,
+        start_index=start_index,
+        end_index=end_index,
+        direction=step,
+        fmz_price=pivot.price + step * zones.fmz * pip_size,
+        imz_price=pivot.price + step * zones.imz * pip_size,
+        fmz_pips=zones.fmz,
+        imz_pips=zones.imz,
+        maintenance=zones.maintenance,
+        margin_as_of=zones.as_of,
+    )
+
+
 def build_envelopes(
     bars: list[Bar],
     pivots: list[Pivot],
@@ -117,22 +146,10 @@ def build_envelopes(
             continue
 
         zones = compute_zones(spec, observation, initial_ratio)
-        step = pivot.direction
         end = pivots[position + 1].index if position + 1 < len(pivots) else last
 
         out.append(
-            Envelope(
-                pivot=pivot,
-                start_index=pivot.index,
-                end_index=min(end, last),
-                direction=step,
-                fmz_price=pivot.price + step * zones.fmz * spec.pip_size,
-                imz_price=pivot.price + step * zones.imz * spec.pip_size,
-                fmz_pips=zones.fmz,
-                imz_pips=zones.imz,
-                maintenance=observation.maintenance,
-                margin_as_of=observation.as_of,
-            )
+            envelope_from(pivot, zones, spec.pip_size, pivot.index, min(end, last))
         )
     return out
 

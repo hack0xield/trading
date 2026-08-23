@@ -84,6 +84,68 @@ def rollover_points(
     return out
 
 
+class RolloverTracker:
+    """`rollover_points` fed one bar at a time, for strategies inside the engine.
+
+    Same rule, same output: a point is the close of the last bar strictly
+    before `T_roll`, one per trading day, and a day with no bar newer than the
+    previous rollover's produces nothing rather than repeating it.
+
+    **One point fewer than the batch function, and deliberately.** `rollover_points`
+    walks every calendar day up to the last bar's own day, so if the data ends
+    at 12:00 it still emits a point for that day's 00:00 boundary using the
+    final bar. Standing inside the run at 12:00 that point does not exist yet —
+    the day has not reached its break, and a later bar could still supersede
+    the price. The tracker emits only once the instant has actually passed,
+    which is the tradeable definition; the trailing point is provisional and is
+    the one the batch function adds. `tests/test_crossing50.py` pins that the
+    streamed points are otherwise identical.
+    """
+
+    __slots__ = ("points", "_tz", "_hour", "_day", "_last_index", "_prev", "_count")
+
+    def __init__(self, rollover_hour: int = 0, rollover_tz: str = "UTC"):
+        self._tz = get_tz(rollover_tz)
+        self._hour = int(rollover_hour)
+        self.points: list[RolloverPoint] = []
+        self._day: date | None = None
+        self._last_index = -1
+        self._prev: Bar | None = None
+        self._count = 0
+
+    def _instant(self, day: date) -> datetime:
+        return datetime(
+            day.year, day.month, day.day, self._hour, tzinfo=self._tz
+        ).astimezone(UTC)
+
+    def push(self, bar: Bar) -> list[RolloverPoint]:
+        """Feed the next closed bar. Returns the rollover points it completed."""
+        index = self._count
+        self._count += 1
+        if self._day is None:
+            self._day = bar.time.astimezone(self._tz).date()
+
+        out: list[RolloverPoint] = []
+        # This bar sits at or after one or more rollover instants; each of them
+        # is now settled, and the last bar before them is the previous one.
+        while bar.time >= self._instant(self._day):
+            candidate = index - 1
+            if candidate >= 0 and candidate != self._last_index:
+                point = RolloverPoint(
+                    day=self._day,
+                    roll_time=self._instant(self._day),
+                    price=self._prev.close,
+                    bar_time=self._prev.time,
+                )
+                self.points.append(point)
+                out.append(point)
+                self._last_index = candidate
+            self._day += timedelta(days=1)
+
+        self._prev = bar
+        return out
+
+
 def envelope_at(envelopes: list[Envelope], bars: list[Bar], t: datetime) -> Envelope | None:
     """Which Margin Zone was active at time `t` — `None` outside any coverage.
 

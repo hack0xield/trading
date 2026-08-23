@@ -81,6 +81,42 @@ disagree. Strategies that do not override `Strategy.chart` get the generic
 price-and-trades chart from `scripts/plot_run.py` instead, and `--no-chart`
 skips it.
 
+## The 50%-crossing strategy
+
+`impl-spec/Backtest Strategy.pdf`. Where the senior-extremum pattern stops at a
+detection, this one specifies the whole trade, so there is almost nothing to
+choose:
+
+```bash
+scripts/run_backtest.py --config configs/strategies/crossing50_eurusd.yaml --save
+```
+
+Two consecutive daily CFD rollover points, under one unchanged Margin Zone,
+straddling the 50% Extremum-to-50% MZ level. Crossing *toward* the zone is
+True and is the signal — down through it from a high, up through it from a low.
+Crossing away is False and is not. Take profit is 100% MZ, the far boundary
+(IMZ, not FMZ); the stop is the same distance the other side of the fill, so
+risk and reward are 1:1 by construction.
+
+**The confirmation lag is most of the story.** `plot_zones.py` draws a zone
+from the bar holding its extreme, which is right for a chart and is lookahead
+for a backtest — nobody knows a ZigZag extreme until price has retraced far
+enough to confirm it. The strategy activates a zone at its pivot's confirmation
+instead, and the crossings that survive that are far fewer than the chart shows:
+
+| deviation | median lag | True crossings drawn | tradeable |
+|---:|---:|---:|---:|
+| 0.5% | 1 bar | 68 | 73 |
+| 1.0% | 5 bars | 146 | 80 |
+| 1.5% | 12 bars | 121 | 25 |
+| 2.0% | 22 bars | 78 | 5 |
+
+At a 2% deviation almost every crossing on the chart has already happened by
+the time its zone is knowable. That is why the config runs at 1.0%, where 80
+signals survive; on EUR/USD H4 over 2022-2026 that turns into 60 trades at a
+38% win rate against a 1.05 payoff, so -1.1% over the period. The chart the run
+writes shows the drawn crossings, and `run.log` reports both counts.
+
 ## Writing another strategy
 
 One file, one decorated class. The `@register` decorator is what makes

@@ -272,3 +272,130 @@ def write_report(
     with open(directory / summary_name, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, default=str)
     return directory
+
+
+# ------------------------------------------------------- backtest run reports
+
+def read_trades(run_dir: Path, bars: list[Bar]) -> list[dict]:
+    """A run's orders, read back from the trades.csv already written.
+
+    Bar indices are resolved by timestamp rather than taken from the run, so
+    the same rows can be drawn against a chart at any timeframe.
+    """
+    import csv
+    from bisect import bisect_right
+
+    from ...utils.timeutil import parse_dt
+
+    path = Path(run_dir) / "trades.csv"
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    times = [int(b.time.timestamp()) for b in bars]
+
+    def index_at(stamp: str) -> int:
+        return max(0, bisect_right(times, int(parse_dt(stamp).timestamp())) - 1)
+
+    out = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            out.append({
+                "id": int(row["id"]), "side": row["side"],
+                "i0": index_at(row["entry_time"]), "i1": index_at(row["exit_time"]),
+                "t0": int(parse_dt(row["entry_time"]).timestamp()),
+                "t1": int(parse_dt(row["exit_time"]).timestamp()),
+                "p0": round(float(row["entry_price"]), 6),
+                "p1": round(float(row["exit_price"]), 6),
+                "pnl": round(float(row["net_pnl"]), 2),
+                "reason": row["reason"], "bars": int(row["bars_held"]),
+                "tag": row.get("tag", ""),
+            })
+    return out
+
+
+def read_metrics(run_dir: Path) -> dict | None:
+    """The run's headline numbers, from the summary already written.
+
+    Read rather than recomputed, so the chart and the printed report cannot
+    quote different figures for the same run.
+    """
+    path = Path(run_dir) / "summary.json"
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        metrics = json.load(fh).get("metrics") or {}
+    keep = (
+        "net_profit", "return_pct", "trades", "wins", "losses", "win_rate_pct",
+        "profit_factor", "payoff_ratio", "expectancy", "max_drawdown_pct",
+        "avg_bars_held", "initial_balance",
+    )
+    return {k: metrics[k] for k in keep if k in metrics} or None
+
+
+def write_zone_run(
+    run_dir: Path,
+    symbol: str,
+    timeframe: str,
+    bars: list[Bar],
+    pivots: list[Pivot],
+    spec: ContractSpec,
+    log,
+    initial_ratio: float,
+    code: str,
+    deviation: str,
+    deviation_pct: float | None = None,
+    deviation_abs: float | None = None,
+    rollover_hour: int = 0,
+    rollover_tz: str = "UTC",
+    rollover_bars: list[Bar] | None = None,
+    levels: list[dict] = (),
+) -> Path:
+    """Render a backtest run as the margin-zones chart, with its trades on it.
+
+    Shared by every margin-zone strategy, so they cannot drift into drawing
+    subtly different pictures of the same zones. The strategy supplies its own
+    `levels` layer — the 25% control-zone geometry, say — and everything else
+    comes from the run: its pivots, its envelopes, its trades, its metrics.
+
+    Writes the same report layout an analysis run produces, so a backtest
+    directory and a `plot_zones.py` directory hold the same files. The zone
+    summary goes to `zones.json`; `summary.json` is the backtest's own.
+    """
+    from .envelopes import build_envelopes
+    from .rollover import rollover_crossings, rollover_points
+    from ...indicators.zigzag import provisional
+
+    run_dir = Path(run_dir)
+    envelopes = build_envelopes(bars, pivots, spec, log, initial_ratio, code)
+
+    source = rollover_bars if rollover_bars is not None else bars
+    roll = rollover_points(source, rollover_hour, rollover_tz)
+    crossings = rollover_crossings(roll, envelopes, bars)
+
+    payload = build_payload(
+        symbol=symbol,
+        timeframe=timeframe,
+        bars=bars,
+        pivots=pivots,
+        envelopes=envelopes,
+        # The unconfirmed extreme in progress. Drawn, never traded — without
+        # it the ZigZag appears to stop dead at the last confirmation.
+        prov=(
+            provisional(bars, deviation_pct, deviation_abs, pivots)
+            if pivots and (deviation_pct or deviation_abs) else None
+        ),
+        spec=spec,
+        deviation=deviation,
+        initial_ratio=initial_ratio,
+        rollover=roll,
+        crossings=crossings,
+        levels=list(levels),
+        trades=read_trades(run_dir, bars),
+        backtest=read_metrics(run_dir),
+    )
+    write_report(
+        run_dir, payload, bars, pivots, envelopes, spec,
+        margin_log=str(getattr(log, "path", "")), chart=True,
+        rollover=roll, crossings=crossings,
+        summary_name="zones.json",
+    )
+    return run_dir / "chart.html"

@@ -75,7 +75,6 @@ class Senior25Params(StrategyParams):
     max_hold_bars: int = 0            # time stop, in bars (0 = none)
 
     # ------------------------------------------------------------- the chart
-    rollover_timeframe: str = "M15"   # bars the daily rollover price is read from
     rollover_hour: int = 0            # hour, in rollover_tz, the daily break starts
     rollover_tz: str = "UTC"
 
@@ -293,79 +292,38 @@ class Senior25Strategy(Strategy):
     # --------------------------------------------------------------- the chart
 
     def chart(self, run_dir, data_uri: str, timeframe: str):
-        """The margin-zones chart, with this run's trades and levels on it.
+        """The margin-zones chart, with this run's trades and 25% levels on it.
 
         Not a second, plainer chart drawn from the trade list: the zone picture
         *is* the analysis this strategy was built on, so the run gets that
-        exact chart — same pivots, same envelopes, same rollover points, same
-        colours — with the 25% levels, approach events and orders added as
-        layers you can switch off. It writes the same report layout a
-        `plot_zones.py` run produces, so a backtest directory and an analysis
-        directory hold the same files.
-
-        Everything is drawn from what the run itself computed. There is no
-        second ZigZag and no second margin read, so the chart cannot disagree
-        with the backtest it came from.
+        exact chart with the pattern added as layers you can switch off.
+        Everything comes from what the run itself computed — no second ZigZag,
+        no second margin read — so the chart cannot disagree with the backtest.
         """
-        from ...data.loader import load_bars
-        from ...indicators.zigzag import provisional
-        from .report import build_payload, write_report
-        from .rollover import rollover_crossings, rollover_points
+        from .report import write_zone_run
 
-        bars, pivots = self._bars, self.tracker.pivots
-        if not bars or not pivots:
+        if not self._bars or not self.tracker.pivots:
             return None
-
-        envelopes = build_envelopes(
-            bars, pivots, self._spec, self._log, self.p.initial_ratio, self._code
-        )
-        deviation = (
-            f"{self.p.deviation_pips:g} pips" if self.p.deviation_pips
-            else f"{self.p.deviation_pct:g}%"
-        )
-
-        # Rollover points are sampled from a finer series than the H4 the
-        # pattern runs on, exactly as plot_zones.py does it. A missing store
-        # for that timeframe is not a reason to lose the whole chart.
-        roll, crossings = [], []
-        if self.p.rollover_timeframe:
-            try:
-                fine = load_bars(
-                    self._symbol, self.p.rollover_timeframe, data=data_uri,
-                    start=bars[0].time, end=bars[-1].time, validate=False,
-                )
-                roll = rollover_points(fine, self.p.rollover_hour, self.p.rollover_tz)
-                crossings = rollover_crossings(roll, envelopes, bars)
-            except Exception:
-                roll, crossings = [], []
-
-        payload = build_payload(
+        p = self.p
+        return write_zone_run(
+            run_dir,
             symbol=self._symbol,
             timeframe=self._timeframe,
-            bars=bars,
-            pivots=pivots,
-            envelopes=envelopes,
-            prov=provisional(
-                bars, self.p.deviation_pct,
-                self.p.deviation_pips * self._spec.pip_size or None, pivots,
-            ),
+            bars=self._bars,
+            pivots=self.tracker.pivots,
             spec=self._spec,
-            deviation=deviation,
-            initial_ratio=self.p.initial_ratio,
-            rollover=roll,
-            crossings=crossings,
-            levels=self._chart_levels(bars),
-            trades=self._chart_trades(run_dir, bars),
-            backtest=self._chart_metrics(run_dir),
+            log=self._log,
+            initial_ratio=p.initial_ratio,
+            code=self._code,
+            deviation=(
+                f"{p.deviation_pips:g} pips" if p.deviation_pips else f"{p.deviation_pct:g}%"
+            ),
+            deviation_pct=p.deviation_pct,
+            deviation_abs=p.deviation_pips * self._spec.pip_size or None,
+            rollover_hour=p.rollover_hour,
+            rollover_tz=p.rollover_tz,
+            levels=self._chart_levels(self._bars),
         )
-        write_report(
-            Path(run_dir), payload, bars, pivots, envelopes, self._spec,
-            margin_log=str(self._log.path), chart=True,
-            rollover=roll, crossings=crossings,
-            # summary.json is the backtest's own; the zone summary goes beside it.
-            summary_name="zones.json",
-        )
-        return Path(run_dir) / "chart.html"
 
     def _chart_levels(self, bars: list[Bar]) -> list[dict]:
         """The §9 geometry, in bar indices the chart can draw directly."""
@@ -385,58 +343,6 @@ class Senior25Strategy(Strategy):
                 "tA": None if event is None else int(event.time.timestamp()),
                 "traded": id(extremum) in self._traded,
             })
-        return out
-
-    def _chart_metrics(self, run_dir) -> dict | None:
-        """The run's headline numbers, read back from the summary just written.
-
-        Taken from `summary.json` rather than recomputed, so the chart and the
-        printed report cannot quote different figures for the same run.
-        """
-        import json
-
-        path = Path(run_dir) / "summary.json"
-        if not path.exists():
-            return None
-        with open(path, "r", encoding="utf-8") as fh:
-            metrics = json.load(fh).get("metrics") or {}
-        keep = (
-            "net_profit", "return_pct", "trades", "wins", "losses", "win_rate_pct",
-            "profit_factor", "payoff_ratio", "expectancy", "max_drawdown_pct",
-            "avg_bars_held", "initial_balance",
-        )
-        return {k: metrics[k] for k in keep if k in metrics} or None
-
-    def _chart_trades(self, run_dir, bars: list[Bar]) -> list[dict]:
-        """This run's orders, read back from the trades.csv already written."""
-        import csv
-        from bisect import bisect_right
-
-        path = Path(run_dir) / "trades.csv"
-        if not path.exists() or path.stat().st_size == 0:
-            return []
-        times = [int(b.time.timestamp()) for b in bars]
-
-        def index_at(stamp: str) -> int:
-            return max(0, bisect_right(times, int(parse_dt(stamp).timestamp())) - 1)
-
-        out = []
-        with open(path, "r", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                out.append({
-                    "id": int(row["id"]),
-                    "side": row["side"],
-                    "i0": index_at(row["entry_time"]),
-                    "i1": index_at(row["exit_time"]),
-                    "t0": int(parse_dt(row["entry_time"]).timestamp()),
-                    "t1": int(parse_dt(row["exit_time"]).timestamp()),
-                    "p0": round(float(row["entry_price"]), 6),
-                    "p1": round(float(row["exit_price"]), 6),
-                    "pnl": round(float(row["net_pnl"]), 2),
-                    "reason": row["reason"],
-                    "bars": int(row["bars_held"]),
-                    "tag": row.get("tag", ""),
-                })
         return out
 
     # --------------------------------------------------------------- reporting

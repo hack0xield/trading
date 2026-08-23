@@ -1,0 +1,54 @@
+# True 50% Crossing -> 100% MZ, as a reproducible run.
+#
+#   scripts/run_backtest.py --config configs/strategies/crossing50_eurusd.yaml --save
+#
+# The specification is impl-spec/Backtest Strategy.pdf. Unlike the senior-
+# extremum pattern it defines the trade as well as the signal, so there is
+# very little here to choose: entry, target and stop all follow from the zone.
+
+strategy: crossing50
+symbol: EURUSD
+timeframe: H4              # the zones and the ZigZag are H4
+
+data: parquet://data/bars
+start: 2022-01-01
+# end: 2024-12-31          # uncommented, this holds 2025+ back as out-of-sample
+
+params:
+  volume: 0.1
+
+  # --- the zones ---------------------------------------------------------
+  contract: 6E             # margin comes from Euro FX futures; EUR/USD CFD is traded
+  deviation_pct: 1.0       # ZigZag reversal. Not 2.0 here, and the reason is
+                           # the confirmation lag: a zone is only tradeable once
+                           # its pivot is confirmed, and at 2.0 the median lag is
+                           # 22 H4 bars, by which time most crossings have already
+                           # happened. Over 2022-2026 that leaves 5 tradeable
+                           # signals against the 78 the chart shows. At 1.0 the
+                           # lag is 5 bars and 80 signals survive; at 0.5, 1 bar
+                           # and 73. Raise it to 2.0 to match the dev2pct zone
+                           # charts, but expect a handful of trades, not a sample.
+  initial_ratio: 1.1
+
+  # --- the signal --------------------------------------------------------
+  rollover_hour: 0         # the daily CFD break. On H4 the 20:00 bar closes
+  rollover_tz: UTC         # exactly here, so its close is the rollover price.
+  max_gap_days: 3          # a weekend collapses into 2-3 calendar days; wider
+                           # than this is treated as missing data, and no
+                           # crossing is created across it (spec §5).
+
+  # --- the trading -------------------------------------------------------
+  one_position: true       # one crossing at a time
+  max_hold_bars: 0         # the spec has no time exit: hold to TP or SL
+  trade: true              # false = detect only, still writes signals.csv
+
+execution:
+  initial_balance: 100000
+  leverage: 100
+  slippage_points: 0
+  commission_per_lot: 0
+  apply_swap: true
+  intrabar: conservative   # a bar holding both stop and target resolves as the
+                           # stop. With a 1:1 bracket this matters more than
+                           # usual — the two are equidistant, so any bar wide
+                           # enough to touch one often touches both.
