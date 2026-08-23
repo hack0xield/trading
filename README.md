@@ -83,7 +83,7 @@ skips it.
 
 ## The 50%-crossing strategy
 
-`impl-spec/Backtest Strategy.pdf`. Where the senior-extremum pattern stops at a
+`impl-spec/Backtest Strategy(crossing50).pdf`. Where the senior-extremum pattern stops at a
 detection, this one specifies the whole trade, so there is almost nothing to
 choose:
 

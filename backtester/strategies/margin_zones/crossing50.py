@@ -1,6 +1,6 @@
 """Trade a True 50% crossing toward the Margin Zone.
 
-Implements `impl-spec/Backtest Strategy.pdf`:
+Implements `impl-spec/Backtest Strategy(crossing50).pdf`:
 
     True Crossing -> enter toward the Margin Zone -> TP at 100% MZ
     -> SL symmetric about entry -> R:R = 1:1

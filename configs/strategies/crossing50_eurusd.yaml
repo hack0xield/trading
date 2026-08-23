@@ -2,7 +2,7 @@
 #
 #   scripts/run_backtest.py --config configs/strategies/crossing50_eurusd.yaml --save
 #
-# The specification is impl-spec/Backtest Strategy.pdf. Unlike the senior-
+# The specification is impl-spec/Backtest Strategy(crossing50).pdf. Unlike the senior-
 # extremum pattern it defines the trade as well as the signal, so there is
 # very little here to choose: entry, target and stop all follow from the zone.
 

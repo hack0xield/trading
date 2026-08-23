@@ -1,4 +1,4 @@
-"""True 50% Crossing -> 100% MZ, checked against `impl-spec/Backtest Strategy.pdf`.
+"""True 50% Crossing -> 100% MZ, checked against `impl-spec/Backtest Strategy(crossing50).pdf`.
 
 Section numbers are the specification's own. The load-bearing tests are the
 ones pinning what the document is strict about: only True crossings trade (§1),
