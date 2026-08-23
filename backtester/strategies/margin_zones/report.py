@@ -59,8 +59,15 @@ def build_payload(
     initial_ratio: float,
     rollover: list[RolloverPoint] = (),
     crossings: list[RolloverCrossing] = (),
+    levels: list[dict] = (),
+    trades: list[dict] = (),
 ) -> dict:
-    """Everything the chart page needs, as one JSON-serialisable dict."""
+    """Everything the chart page needs, as one JSON-serialisable dict.
+
+    `levels` and `trades` are empty for an analysis run and populated for a
+    backtest, which is the whole difference between the two charts: the same
+    zones, with what a strategy did about them drawn on top.
+    """
     stats = summarise(envelopes, bars)
     index_of = {id(p): k for k, p in enumerate(pivots)}
     sizes = swing_sizes(pivots, as_pct=True)
@@ -132,6 +139,8 @@ def build_payload(
             "i": prov.index, "p": round(prov.price, 6), "kind": prov.kind,
             "confirmAt": round(prov.confirm_at, 6), "bars": prov.bars_since,
         },
+        "levels": list(levels),
+        "trades": list(trades),
         "stats": stats,
         "caution": caution,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),

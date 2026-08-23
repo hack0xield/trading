@@ -61,6 +61,27 @@ class Strategy:
     def on_finish(self, ctx: Context) -> None:
         """Called after the last bar, before open positions are force-closed."""
 
+    def chart(self, run_dir, data_uri: str, timeframe: str):
+        """Render this run's chart, or return None for the default one.
+
+        A strategy built on a body of analysis usually already has a chart for
+        that analysis, and the useful picture is that chart with the trades on
+        it — not a second, plainer one drawn from the trade list alone. This is
+        where a strategy says so. Called after the run directory is written, so
+        `trades.csv` and the artifacts are already on disk.
+        """
+        return None
+
+    def artifacts(self) -> dict[str, list[dict]]:
+        """Extra tables to save with the run, `name -> rows`.
+
+        A trade list cannot express why a strategy traded. Returning rows here
+        puts them in the run directory as `<name>.csv`, next to trades.csv, so
+        a chart or a notebook can line them up against the trades afterwards.
+        Called once, after `on_finish`.
+        """
+        return {}
+
     # ------------------------------------------------------------------ misc
 
     @property

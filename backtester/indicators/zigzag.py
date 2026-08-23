@@ -109,6 +109,90 @@ def zigzag(
     return pivots
 
 
+class ZigZagTracker:
+    """`zigzag()` fed one bar at a time, for strategies running inside the engine.
+
+    The batch function needs the whole series up front, which a strategy does
+    not have — and recomputing it from the open of history on every bar is both
+    quadratic and an invitation to accidentally read ahead. This is the same
+    algorithm with its loop turned inside out: push each closed bar as it
+    arrives and take back the pivots that bar confirmed.
+
+    `push` returns at most one pivot, and it is returned on the bar that
+    confirmed it, never on the bar that holds the extreme. `ZigZagTracker(...)`
+    fed a whole series therefore ends up with exactly `zigzag(bars, ...)` —
+    `tests/test_senior25.py` pins that equivalence, which is what lets the
+    strategy be checked against the batch indicator everything else uses.
+    """
+
+    __slots__ = (
+        "pivots", "_deviation_pct", "_deviation_abs", "_direction",
+        "_hi", "_hi_i", "_hi_time", "_lo", "_lo_i", "_lo_time", "_count",
+    )
+
+    def __init__(
+        self,
+        deviation_pct: float | None = 0.5,
+        deviation_abs: float | None = None,
+    ):
+        if deviation_abs is None and (deviation_pct is None or deviation_pct <= 0):
+            raise ValueError("give a positive deviation_pct or deviation_abs")
+        if deviation_abs is not None and deviation_abs <= 0:
+            raise ValueError("deviation_abs must be > 0")
+        self._deviation_pct = deviation_pct
+        self._deviation_abs = deviation_abs
+        self.pivots: list[Pivot] = []
+        self._direction = 0
+        self._hi = self._lo = 0.0
+        self._hi_i = self._lo_i = 0
+        self._hi_time = self._lo_time = None
+        self._count = 0
+
+    def _threshold(self, price: float) -> float:
+        if self._deviation_abs is not None:
+            return self._deviation_abs
+        return abs(price) * self._deviation_pct / 100.0
+
+    @property
+    def bars_seen(self) -> int:
+        return self._count
+
+    def push(self, bar: Bar) -> list[Pivot]:
+        """Feed the next *closed* bar. Returns the pivots it confirmed (0 or 1)."""
+        i = self._count
+        self._count += 1
+        if i == 0:
+            self._hi, self._hi_i, self._hi_time = bar.high, 0, bar.time
+            self._lo, self._lo_i, self._lo_time = bar.low, 0, bar.time
+
+        if self._direction >= 0 and bar.high >= self._hi:
+            self._hi, self._hi_i, self._hi_time = bar.high, i, bar.time
+        if self._direction <= 0 and bar.low <= self._lo:
+            self._lo, self._lo_i, self._lo_time = bar.low, i, bar.time
+
+        fell = self._direction != -1 and bar.low <= self._hi - self._threshold(self._hi)
+        rose = self._direction != 1 and bar.high >= self._lo + self._threshold(self._lo)
+
+        # Same tie-break as the batch version: the older extreme wins, so
+        # pivots stay in chronological order.
+        if fell and rose:
+            fell, rose = (self._hi_i <= self._lo_i), not (self._hi_i <= self._lo_i)
+
+        if fell:
+            pivot = Pivot(self._hi_i, self._hi_time, self._hi, "high", i, bar.time)
+            self._direction = -1
+            self._lo, self._lo_i, self._lo_time = bar.low, i, bar.time
+        elif rose:
+            pivot = Pivot(self._lo_i, self._lo_time, self._lo, "low", i, bar.time)
+            self._direction = 1
+            self._hi, self._hi_i, self._hi_time = bar.high, i, bar.time
+        else:
+            return []
+
+        self.pivots.append(pivot)
+        return [pivot]
+
+
 @dataclass(frozen=True, slots=True)
 class Provisional:
     """The swing extreme currently in progress — **not** a pivot.

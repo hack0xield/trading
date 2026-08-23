@@ -14,6 +14,9 @@
     --win: #2a78d6;
     --loss: #e34948;
     --price: #52514e;
+    --trade-win: #1f7a6b;
+    --trade-loss: #9c3587;
+    --level: #8a5a00;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) .viz-root {
@@ -29,6 +32,9 @@
       --win: #3987e5;
       --loss: #e66767;
       --price: #c3c2b7;
+      --trade-win: #5fbfae;
+      --trade-loss: #dd8ccb;
+      --level: #d9a441;
     }
   }
   :root[data-theme="dark"] .viz-root {
@@ -44,6 +50,9 @@
     --win: #3987e5;
     --loss: #e66767;
     --price: #c3c2b7;
+    --trade-win: #5fbfae;
+    --trade-loss: #dd8ccb;
+    --level: #d9a441;
   }
 
   .viz-root {

@@ -204,3 +204,7 @@ class BacktestResult:
     start: datetime | None = None
     end: datetime | None = None
     logs: list[str] = field(default_factory=list)
+    #: Extra tables a strategy chose to publish, `name -> rows`. Saved beside
+    #: trades.csv as `<name>.csv`, which is how a chart gets at whatever the
+    #: strategy knows that a trade list cannot express.
+    artifacts: dict[str, list[dict]] = field(default_factory=dict)

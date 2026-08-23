@@ -128,6 +128,7 @@ class Backtester:
             bars_processed=index + 1,
             start=bars[0].time,
             end=last.time,
+            artifacts=self.strategy.artifacts(),
             logs=logs
             + [f"run took {_time.perf_counter() - started:.2f}s"]
             + [f"rejected: {reason}" for _, reason in broker.rejected[:20]],

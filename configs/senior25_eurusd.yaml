@@ -1,0 +1,50 @@
+# H4 Senior Extremum — 25% Control Zone approach, as a tradeable run.
+#
+#   scripts/run_backtest.py --config configs/senior25_eurusd.yaml --save
+#
+# The pattern (senior extremum, 25% level, approach event) is the PDF's; the
+# entry, stop and target are not — the specification stops at the event. See
+# the header of backtester/strategies/margin_zones/approach25.py for what the
+# defaults below assume and how to take the opposite view.
+
+strategy: senior25
+symbol: EURUSD
+timeframe: H4              # the pattern is specified on H4
+data: parquet://data/bars
+
+start: 2022-01-01
+# end: 2024-12-31          # uncommented, this holds 2025+ back as out-of-sample
+
+params:
+  volume: 0.1
+
+  # --- the pattern -------------------------------------------------------
+  contract: 6E             # margin comes from Euro FX futures; EUR/USD CFD is traded
+  deviation_pct: 2.0       # ZigZag reversal. 1% gives ~360 pivots and ~90 senior
+                           # extremums over 2022-2026; 2% gives 14, which is not a
+                           # sample. Legs average ~193 pips here, about one FMZ.
+  level_fraction: 0.25     # §4.1 — the 25%
+  tolerance_fraction: 0.10 # §5.2 — 10% of Distance25, i.e. 2.5% of FMZ
+  max_wait_bars: 0         # 0 = a pattern waits indefinitely, which is what the
+                           # specification says and probably not what you want:
+                           # the median approach comes 41 bars after confirmation
+                           # but the slowest took 4,871 (812 days), and 24 of 84
+                           # took over 40 days. 120 or 240 is a saner trading rule.
+
+  # --- the trading -------------------------------------------------------
+  bias: zone               # sell a senior high's approach, buy a senior low's
+  stop_mode: extremum      # stop beyond the extremum itself
+  stop_buffer: 0.10        # by 10% of Distance25 — ~4.8 pips at a 192-pip FMZ
+  target_mode: fraction
+  target_fraction: 1.0     # the near Control Zone boundary, i.e. the full FMZ
+  one_position: true       # senior highs and lows overlap; trade one at a time
+  max_hold_bars: 0
+
+
+execution:
+  initial_balance: 100000
+  leverage: 100
+  slippage_points: 0
+  commission_per_lot: 0
+  apply_swap: true
+  intrabar: conservative   # a bar holding both stop and target resolves as the stop

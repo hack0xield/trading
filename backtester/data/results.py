@@ -56,6 +56,9 @@ def save_result(
     write_rows(directory / "trades.csv", [t.as_row() for t in result.trades])
     write_rows(directory / "equity.csv", [p.as_row() for p in result.equity])
 
+    for name, rows in (result.artifacts or {}).items():
+        write_rows(directory / f"{name}.csv", rows)
+
     if result.logs:
         with open(directory / "run.log", "w", encoding="utf-8") as fh:
             fh.write("\n".join(result.logs) + "\n")

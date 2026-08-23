@@ -5,7 +5,7 @@
     scripts/run_backtest.py -S day_open -s XAUUSD -t M15 \
         -p volume=0.1 -p stop_pct=2 -p take_pct=2
 
-    # same thing, from a config file, saving the run
+    # same thing, from a config file, saving the run and its chart
     scripts/run_backtest.py --config configs/day_open_xauusd.yaml --save
 
     # how much of the result is the intrabar assumption?
@@ -43,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     output.add_argument("--save", action="store_true", help="write the run to --runs-dir")
     output.add_argument("--runs-dir", default="runs", help="where --save writes (default runs/)")
     output.add_argument("--label", default="", help="suffix for the run directory name")
+    output.add_argument(
+        "--no-chart", action="store_true",
+        help="skip chart.html; --save renders it by default",
+    )
+    output.add_argument(
+        "--chart-timeframe", default="H4",
+        help="timeframe to draw the chart at (default H4)",
+    )
     output.add_argument("--monthly", action="store_true", help="add a monthly returns table")
     output.add_argument("--trades", type=int, default=0, help="print the first N trades")
     output.add_argument("--json", action="store_true", help="emit metrics as JSON only")
@@ -116,6 +124,19 @@ def main(argv: list[str] | None = None) -> int:
             execution=execution.__dict__,
         )
         print(f"\nSaved to {directory}")
+
+        if not args.no_chart:
+            data_uri = config.get("data") or cli.DEFAULT_DATA
+            # A strategy may render its own; margin-zone strategies draw the
+            # zones chart with the trades on it rather than a bare price plot.
+            drawn = strategy.chart(directory, data_uri, args.chart_timeframe)
+            if drawn is None:
+                # Imported here, not at module scope: drawing needs the chart
+                # template, and an unsaved run should not pay for loading it.
+                from scripts.plot_run import render
+
+                drawn = render(directory, data_uri, args.chart_timeframe)
+            print(f"Chart: {drawn}")
 
     return 0
 

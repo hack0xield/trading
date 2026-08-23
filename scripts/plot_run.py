@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from backtester.core.instrument import load_instrument  # noqa: E402
 from backtester.data.loader import load_bars, resample  # noqa: E402
 from backtester.utils.timeutil import parse_dt  # noqa: E402
 
@@ -48,6 +49,11 @@ def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
     symbol = summary["symbol"]
     source_tf = summary["timeframe"]
     period = summary.get("period", {})
+
+    # Round to the instrument's own precision, never a fixed 2 dp. Gold at
+    # 1,800.25 survives that; EUR/USD at 1.08123 does not — it collapses 7,193
+    # bars onto 25 distinct values and draws a staircase instead of a price.
+    digits = load_instrument(symbol).digits
 
     bars = load_bars(
         symbol,
@@ -81,8 +87,8 @@ def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
                     "i1": max(0, bisect_right(times, exit_) - 1),
                     "t0": entry,
                     "t1": exit_,
-                    "p0": round(float(row["entry_price"]), 2),
-                    "p1": round(float(row["exit_price"]), 2),
+                    "p0": round(float(row["entry_price"]), digits),
+                    "p1": round(float(row["exit_price"]), digits),
                     "pnl": round(float(row["net_pnl"]), 2),
                     "reason": row["reason"],
                     "bars": int(row["bars_held"]),
@@ -97,9 +103,10 @@ def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
         "shownTf": shown_tf,
         "params": summary.get("params", {}),
         "times": times,
-        "close": [round(b.close, 2) for b in bars],
-        "high": [round(b.high, 2) for b in bars],
-        "low": [round(b.low, 2) for b in bars],
+        "digits": digits,
+        "close": [round(b.close, digits) for b in bars],
+        "high": [round(b.high, digits) for b in bars],
+        "low": [round(b.low, digits) for b in bars],
         "trades": trades,
         "stats": {
             "net_profit": metrics.get("net_profit", 0.0),
@@ -134,7 +141,20 @@ def main(argv: list[str] | None = None) -> int:
     if not (run_dir / "summary.json").exists():
         raise SystemExit(f"{run_dir} does not look like a run directory (no summary.json)")
 
-    payload = build_payload(run_dir, args.data, args.timeframe)
+    render(run_dir, args.data, args.timeframe, Path(args.out) if args.out else None)
+    return 0
+
+
+def render(
+    run_dir: Path, data_uri: str, timeframe: str | None, out: Path | None = None
+) -> Path:
+    """Write `chart.html` for a saved run. Returns the path.
+
+    Split out of `main` so `run_backtest.py --save` can call it directly,
+    which is what makes a chart part of saving a run rather than a second
+    command to remember.
+    """
+    payload = build_payload(run_dir, data_uri, timeframe)
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     # `</script>` inside the JSON would end the block early; `<` escaping is the
@@ -150,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         .replace("/*__STYLE__*/", STYLE_PATH.read_text(encoding="utf-8"))
     )
 
-    out = Path(args.out) if args.out else run_dir / "chart.html"
+    out = out or run_dir / "chart.html"
     out.write_text(html, encoding="utf-8")
     size = out.stat().st_size / 1024
     print(
@@ -158,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         f"  {len(payload['close']):,} {payload['shownTf']} bars, "
         f"{len(payload['trades']):,} trades"
     )
-    return 0
+    return out
 
 
 if __name__ == "__main__":

@@ -49,6 +49,38 @@ series above it turns in 114 trades at a 51.8% win rate, a 1.00 profit factor
 and -$86 — which is -$1,056 of swap partly offset by a small directional edge.
 That is the null hypothesis behaving exactly as it should.
 
+## The senior-extremum strategy
+
+`H4 Senior Extremum - 25% Control Zone Approach Pattern.pdf` as a run. A ZigZag
+high that dominates the nearest high on each side (`H-1 < H0 > H+1`) anchors a
+level a quarter of the way toward the margin zone's near boundary, and the
+first candle to come back within 10% of that distance is the signal.
+
+```bash
+scripts/run_backtest.py --config configs/senior25_eurusd.yaml --save
+```
+
+`--save` writes the run **and the margin-zones chart it was built on**, with
+the strategy drawn on top — the same picture `plot_zones.py` produces (ZigZag,
+`[FMZ, IMZ]` envelopes, 50% MZ, E50, rollover points, E50 crossings), plus:
+
+* each senior extremum as a diamond, in its own colour rather than the
+  direction blue/red the envelopes already use;
+* its 25% level and approach corridor, running forward to the bar that
+  approached it;
+* a ring on the approach event, and the orders that followed — entry ● to
+  exit ▲/▼, in a third colour pair.
+
+`25% levels` and `Orders` have their own Show/Hide buttons. The run directory
+holds the same files an analysis run does (`pivots.csv`, `envelopes.csv`,
+`rollover.csv`, `crossings.csv`) alongside `trades.csv` and the §8 `events.csv`.
+
+Nothing is recomputed for the chart: it draws the run's own ZigZag, its own
+envelopes and its own margin readings, so a backtest and its chart cannot
+disagree. Strategies that do not override `Strategy.chart` get the generic
+price-and-trades chart from `scripts/plot_run.py` instead, and `--no-chart`
+skips it.
+
 ## Writing another strategy
 
 One file, one decorated class. The `@register` decorator is what makes

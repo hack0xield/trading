@@ -34,6 +34,14 @@
       <span>Price scale</span>
       <div class="seg" id="scale" role="group" aria-label="Price scale"></div>
     </div>
+    <div class="ctl" id="levels-ctl" hidden>
+      <span>25% levels</span>
+      <div class="seg" id="levels" role="group" aria-label="Show 25% control zone levels"></div>
+    </div>
+    <div class="ctl" id="trades-ctl" hidden>
+      <span>Orders</span>
+      <div class="seg" id="trades" role="group" aria-label="Show trades"></div>
+    </div>
     <div class="ctl"><span id="count"></span></div>
   </div>
 
@@ -89,7 +97,13 @@
 const DATA = /*__DATA__*/null;
 
 const PLOT_H = 460, XAXIS_H = 26, YAXIS_W = 74, PAD = 14;
-const state = { px: 4, filter: "both", scale: "fit" };
+const LEVELS = (DATA.levels || []);
+const TRADES = (DATA.trades || []);
+const state = {
+  px: 4, filter: "both", scale: "fit",
+  levels: LEVELS.length > 0,
+  trades: TRADES.length > 0,
+};
 const N = DATA.close.length;
 
 const $ = (id) => document.getElementById(id);
@@ -113,6 +127,8 @@ for (const e of DATA.envelopes) {
   gLo = Math.min(gLo, e.imz, e.fmz, e.e50); gHi = Math.max(gHi, e.imz, e.fmz, e.e50);
 }
 for (const r of DATA.rollover) { gLo = Math.min(gLo, r.p); gHi = Math.max(gHi, r.p); }
+for (const L of LEVELS) { gLo = Math.min(gLo, L.lo); gHi = Math.max(gHi, L.hi); }
+for (const t of TRADES) { gLo = Math.min(gLo, t.p0, t.p1); gHi = Math.max(gHi, t.p0, t.p1); }
 { const s = gHi - gLo; gLo -= s * 0.03; gHi += s * 0.03; }
 
 const view = { i0: 0, i1: 0, lo: gLo, hi: gHi, left: 0, w: 0 };
@@ -158,6 +174,21 @@ function measure() {
     for (const e of DATA.envelopes) {
       if (e.i1 < view.i0 || e.i0 > view.i1) continue;
       lo = Math.min(lo, e.fmz, e.imz, e.e50); hi = Math.max(hi, e.fmz, e.imz, e.e50);
+    }
+  }
+  // A trade whose stop sat off-screen still has to be visible, or the marker
+  // lands on the edge of the plot and reads as something it is not.
+  if (state.trades) {
+    for (const t of TRADES) {
+      if (t.i1 < view.i0 || t.i0 > view.i1) continue;
+      lo = Math.min(lo, t.p0, t.p1); hi = Math.max(hi, t.p0, t.p1);
+    }
+  }
+  if (state.levels) {
+    for (const L of LEVELS) {
+      const end = L.iA === null ? N - 1 : L.iA;
+      if (end < view.i0 || L.iE > view.i1) continue;
+      lo = Math.min(lo, L.lo); hi = Math.max(hi, L.hi);
     }
   }
   if (!isFinite(lo)) { lo = gLo; hi = gHi; }
@@ -243,6 +274,15 @@ for (const [color, glyph, text] of [
     ["var(--win)", "◎", "True crossing — rollover moved through the 50% Ext-MZ level toward the zone"],
     ["var(--loss)", "◎", "False crossing — rollover moved through it away from the zone"],
   ] : []),
+  ...(LEVELS.length ? [
+    ["var(--level)", "◆", "Senior H4 extremum — dominates the nearest same-type pivot each side"],
+    ["var(--level)", "▭", "Its 25% Control Zone level, with the approach corridor around it"],
+    ["var(--level)", "○", "First approach — the event the strategy trades"],
+  ] : []),
+  ...(TRADES.length ? [
+    ["var(--trade-win)", "▲", "Winning order — entry ● to exit ▲"],
+    ["var(--trade-loss)", "▼", "Losing order — entry ● to exit ▼"],
+  ] : []),
   ...(DATA.prov ? [["var(--muted)", "○",
     `Unconfirmed ${DATA.prov.kind} ${px_(DATA.prov.p)} (${DATA.prov.bars} bars ago) — ` +
     `needs ${px_(DATA.prov.confirmAt)} to become a pivot; no zone is drawn from it`]] : []),
@@ -258,6 +298,9 @@ for (const [color, glyph, text] of [
   const lab = document.createElement("span"); lab.textContent = text;
   item.append(lab); $("legend").append(item);
 }
+
+if (LEVELS.length) $("levels-ctl").hidden = false;
+if (TRADES.length) $("trades-ctl").hidden = false;
 
 // ---- controls ---------------------------------------------------------
 function seg(host, options, current, onPick) {
@@ -281,6 +324,14 @@ function controls() {
       state.filter, (v) => { state.filter = v; draw(); });
   seg($("scale"), [["fit", "Fit visible"], ["full", "Full range"]],
       state.scale, (v) => { state.scale = v; draw(); });
+  if (LEVELS.length) {
+    seg($("levels"), [[true, "Show"], [false, "Hide"]], state.levels,
+        (v) => { state.levels = v; draw(); });
+  }
+  if (TRADES.length) {
+    seg($("trades"), [[true, "Show"], [false, "Hide"]], state.trades,
+        (v) => { state.trades = v; draw(); });
+  }
 }
 
 // ---- render -----------------------------------------------------------
@@ -367,6 +418,65 @@ function draw() {
       cx: xAt(r.t), cy: y(r.p), r: 2.5,
       fill: "var(--text-primary)", "fill-opacity": 0.55,
     }));
+  }
+
+  // The 25% Control Zone levels (§9). These belong to the strategy, not to
+  // the zone analysis, so they take a colour of their own rather than
+  // borrowing the direction blue/red the envelopes already use.
+  if (state.levels) {
+    for (const L of LEVELS) {
+      const end = L.iA === null ? N - 1 : L.iA;
+      if (end < a || L.iE > b) continue;
+      const xs = x(Math.max(L.iE, a - 1)), xe = x(Math.min(end, b + 1));
+      const yTop = y(L.hi), yBot = y(L.lo);
+      // The corridor is 2.5% of FMZ, routinely sub-pixel: floor its height so
+      // it never disappears at Far zoom.
+      plot.append(el("rect", {
+        x: xs, y: yTop, width: Math.max(1, xe - xs), height: Math.max(1.5, yBot - yTop),
+        fill: "var(--level)", "fill-opacity": 0.22,
+      }));
+      plot.append(el("line", {
+        x1: xs, y1: y(L.lvl), x2: xe, y2: y(L.lvl), stroke: "var(--level)",
+        "stroke-width": 1, "stroke-dasharray": "4 3", "stroke-opacity": 0.85,
+      }));
+      const xE = x(L.iE), yE = y(L.pE), r = 4;
+      plot.append(el("path", {
+        d: `M${xE},${yE - r}L${xE + r},${yE}L${xE},${yE + r}L${xE - r},${yE}Z`,
+        fill: "var(--level)", stroke: "var(--surface-1)", "stroke-width": 1.5,
+      }));
+      if (L.iA !== null && L.iA >= a && L.iA <= b) {
+        plot.append(el("circle", {
+          cx: x(L.iA), cy: y(L.lvl), r: 4.5, fill: "none",
+          stroke: "var(--level)", "stroke-width": 2,
+        }));
+      }
+    }
+  }
+
+  // Orders. Blue and red already mean zone direction on this chart, so trades
+  // get their own pair — and the marker shape says win/loss a second time, so
+  // colour is never the only channel carrying it.
+  let tradesDrawn = 0;
+  if (state.trades) {
+    for (const t of TRADES) {
+      if (t.i1 < a || t.i0 > b) continue;
+      tradesDrawn++;
+      const c = t.pnl > 0 ? "var(--trade-win)" : "var(--trade-loss)";
+      const x0 = x(t.i0), x1 = x(t.i1), y0 = y(t.p0), y1 = y(t.p1);
+      plot.append(el("line", {
+        x1: x0, y1: y0, x2: x1, y2: y1, stroke: c, "stroke-width": 2,
+        "stroke-linecap": "round", "stroke-opacity": 0.9,
+      }));
+      plot.append(el("circle", {
+        cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2,
+      }));
+      const d = t.pnl > 0
+        ? `M${x1},${y1 - 5}L${x1 + 5},${y1 + 4}L${x1 - 5},${y1 + 4}Z`
+        : `M${x1},${y1 + 5}L${x1 + 5},${y1 - 4}L${x1 - 5},${y1 - 4}Z`;
+      plot.append(el("path", {
+        d, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round",
+      }));
+    }
   }
 
   // Rollover crossing events (§5.5): a ring around the second rollover point

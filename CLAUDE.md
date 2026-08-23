@@ -20,7 +20,7 @@ neither is installed.
 ## Working here
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                    # 122 tests, ~1s
+.venv/bin/python -m pytest tests/ -q                    # 299 tests, ~3s
 scripts/run_backtest.py --config configs/day_open_xauusd.yaml
 scripts/run_backtest.py --list-strategies
 ```
