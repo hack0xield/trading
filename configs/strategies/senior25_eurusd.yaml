@@ -20,10 +20,9 @@ params:
 
   # --- the pattern -------------------------------------------------------
   contract: 6E             # margin comes from Euro FX futures; EUR/USD CFD is traded
-  deviation_pct: 2.0       # ZigZag reversal. Over 2022-2026 this gives 64 pivots
-                           # and 14 senior extremums — a small sample, but it
-                           # matches the dev2pct zone charts. 1.0 gives 363
-                           # pivots and 94 senior extremums instead.
+  deviation_pct: 2.0       # retracement that confirms a ZigZag pivot, as a % of
+                           # the extreme's price — ~220 pips on EUR/USD at 1.10.
+                           # Higher: fewer, larger swings, confirmed later.
   level_fraction: 0.25     # §4.1 — the 25%
   tolerance_fraction: 0.10 # §5.2 — 10% of Distance25, i.e. 2.5% of FMZ
   max_wait_bars: 0         # 0 = a pattern waits indefinitely, which is what the

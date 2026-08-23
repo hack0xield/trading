@@ -19,15 +19,9 @@ params:
 
   # --- the zones ---------------------------------------------------------
   contract: 6E             # margin comes from Euro FX futures; EUR/USD CFD is traded
-  deviation_pct: 1.0       # ZigZag reversal. Not 2.0 here, and the reason is
-                           # the confirmation lag: a zone is only tradeable once
-                           # its pivot is confirmed, and at 2.0 the median lag is
-                           # 22 H4 bars, by which time most crossings have already
-                           # happened. Over 2022-2026 that leaves 5 tradeable
-                           # signals against the 78 the chart shows. At 1.0 the
-                           # lag is 5 bars and 80 signals survive; at 0.5, 1 bar
-                           # and 73. Raise it to 2.0 to match the dev2pct zone
-                           # charts, but expect a handful of trades, not a sample.
+  deviation_pct: 2.0       # retracement that confirms a ZigZag pivot, as a % of
+                           # the extreme's price — ~220 pips on EUR/USD at 1.10.
+                           # Higher: fewer, larger swings, confirmed later.
   initial_ratio: 1.1
 
   # --- the signal --------------------------------------------------------

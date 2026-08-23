@@ -57,8 +57,8 @@ class Crossing50Params(StrategyParams):
     contracts_dir: str = ""           # default: configs/contracts
     margin_log: str = ""              # default: data/margins/margins.csv
     initial_ratio: float = DEFAULT_INITIAL_RATIO
-    deviation_pct: float = 2.0        # ZigZag reversal, percent of price
-    deviation_pips: float = 0.0       # in pips instead; overrides deviation_pct
+    deviation_pct: float = 2.0        # retracement confirming a ZigZag pivot, % of price
+    deviation_pips: float = 0.0       # the same threshold in pips; takes priority
 
     # ------------------------------------------------------------- the signal
     rollover_hour: int = 0            # hour, in rollover_tz, the daily break starts
@@ -288,6 +288,7 @@ class Crossing50Strategy(Strategy):
             deviation_abs=p.deviation_pips * self._spec.pip_size or None,
             rollover_hour=p.rollover_hour,
             rollover_tz=p.rollover_tz,
+            strategy=self.name,
         )
 
     def artifacts(self) -> dict[str, list[dict]]:

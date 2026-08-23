@@ -5,9 +5,9 @@ sits on top of the machinery already here: ZigZag pivots from `indicators/`,
 FMZ from `margins.py`. Three stages, in order:
 
 1. **Senior extremum** (§3). A ZigZag high is *senior* when the nearest high on
-   each side of it is lower: `H-1 < H0 > H+1`. Mirrored for lows. Neighbours of
-   the same type are two positions away in the alternating pivot list, so `H+1`
-   is `pivots[k+2]`, not `pivots[k+1]`.
+   each side of it is lower: `H-1 < H0 > H+1`. That rule needs nothing but
+   pivots, so it lives in `indicators/swings.py`; what stays here is everything
+   downstream of it, which does need a Margin Zone.
 
 2. **The 25% level** (§4). Not a level *inside* the zone: it is a quarter of
    the way from the extremum toward the zone's near boundary, which sits at the
@@ -35,6 +35,7 @@ from datetime import date, datetime
 from typing import Callable, Optional
 
 from ...core.types import Bar
+from ...indicators.swings import newest_senior, senior_pivots
 from ...indicators.zigzag import Pivot, ZigZagTracker
 from .margins import MarginZones
 
@@ -230,13 +231,6 @@ class ApproachEvent:
         }
 
 
-def _senior(candidate: Pivot, left: Pivot, right: Pivot) -> bool:
-    """§3.2 / §3.3. Strict on both sides: an equal neighbour does not dominate."""
-    if candidate.is_high:
-        return left.price < candidate.price > right.price
-    return left.price > candidate.price < right.price
-
-
 class SeniorApproachTracker:
     """Bars in, approach events out — the pattern as a stream (§10).
 
@@ -305,29 +299,24 @@ class SeniorApproachTracker:
     # ------------------------------------------------------------- internals
 
     def _confirm_candidate(self) -> SeniorExtremum | None:
-        """A pivot just landed; the candidate it might confirm is two back.
+        """A pivot just landed; did it confirm a senior one two back?
 
-        Pivots alternate, so the newest pivot is the same-type right neighbour
-        of `pivots[-3]`, and that candidate's left neighbour is `pivots[-5]`.
-        Fewer than five pivots means there is nothing to confirm yet.
+        The structural test is `indicators.newest_senior`; what this adds is
+        the Margin Zone, without which there is no level to build.
         """
-        pivots = self._zigzag.pivots
-        if len(pivots) < 5:
+        senior = newest_senior(self._zigzag.pivots)
+        if senior is None:
             return None
 
-        candidate, left, right = pivots[-3], pivots[-5], pivots[-1]
-        if not _senior(candidate, left, right):
-            return None
-
-        zones = self._zones_for(candidate)
+        zones = self._zones_for(senior.pivot)
         if zones is None:
-            self.uncovered.append(candidate)
+            self.uncovered.append(senior.pivot)
             return None
 
         return SeniorExtremum(
-            pivot=candidate,
-            left=left,
-            right=right,
+            pivot=senior.pivot,
+            left=senior.left,
+            right=senior.right,
             zones=zones,
             pip_size=self._pip_size,
             level_fraction=self._level_fraction,
@@ -374,18 +363,15 @@ def senior_extremums(
     tracker inside a strategy; use this to draw §9's levels afterwards.
     """
     out = []
-    for k in range(2, len(pivots) - 2):
-        candidate, left, right = pivots[k], pivots[k - 2], pivots[k + 2]
-        if not _senior(candidate, left, right):
-            continue
-        zones = zones_for(candidate)
+    for senior in senior_pivots(pivots):
+        zones = zones_for(senior.pivot)
         if zones is None:
             continue
         out.append(
             SeniorExtremum(
-                pivot=candidate,
-                left=left,
-                right=right,
+                pivot=senior.pivot,
+                left=senior.left,
+                right=senior.right,
                 zones=zones,
                 pip_size=pip_size,
                 level_fraction=level_fraction,

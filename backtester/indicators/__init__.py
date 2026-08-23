@@ -9,11 +9,13 @@ which meant importing the indicator dragged in CME margin machinery — 23
 modules for a function that turns bars into pivots.
 """
 
+from .swings import SeniorPivot, is_senior, newest_senior, senior_pivots
 from .zigzag import (
     Pivot, Provisional, ZigZagTracker, legs, pivots_known_by, provisional, swing_sizes, zigzag,
 )
 
 __all__ = [
-    "Pivot", "Provisional", "ZigZagTracker", "legs", "pivots_known_by",
-    "provisional", "swing_sizes", "zigzag",
+    "Pivot", "Provisional", "SeniorPivot", "ZigZagTracker", "is_senior", "legs",
+    "newest_senior", "pivots_known_by", "provisional", "senior_pivots",
+    "swing_sizes", "zigzag",
 ]

@@ -708,3 +708,39 @@ class TestChartSummaries:
 
         assert payload["trades"] == []
         assert payload["backtest"]["trades"] == 0
+
+
+class TestChartDrawsOnlyWhatItUses:
+    """The pattern consumes one number from the zone — FMZ — and nothing else.
+
+    It never reads a daily rollover point or an E50 crossing, so its chart does
+    not draw them. `crossing50` does read them, and its chart does.
+    """
+
+    def payload_of(self, desk, gold, config, tmp_path) -> dict:
+        import re
+
+        from backtester.data.results import save_result
+        from backtester.metrics import compute
+
+        strategy = Senior25Strategy(**desk)
+        result = run(strategy, senior_high_series(), gold, config)
+        directory = save_result(result, compute(result).to_dict(), root=tmp_path)
+        strategy.chart(directory, "parquet://data/bars", "H4")
+        page = (directory / "chart.html").read_text(encoding="utf-8")
+        return json.loads(re.search(r'(\{"symbol".*?\})\s*;', page, re.S).group(1)), directory
+
+    def test_no_rollover_or_crossing_layer(self, desk, gold, config, tmp_path):
+        payload, _ = self.payload_of(desk, gold, config, tmp_path)
+        assert payload["rollover"] == []
+        assert payload["crossings"] == []
+
+    def test_the_layers_it_does_use_are_there(self, desk, gold, config, tmp_path):
+        payload, _ = self.payload_of(desk, gold, config, tmp_path)
+        assert payload["envelopes"] and payload["levels"] and payload["trades"]
+
+    def test_the_unused_tables_are_not_written(self, desk, gold, config, tmp_path):
+        _, directory = self.payload_of(desk, gold, config, tmp_path)
+        present = {p.name for p in directory.iterdir()}
+        assert "rollover.csv" not in present and "crossings.csv" not in present
+        assert {"pivots.csv", "envelopes.csv", "events.csv"} <= present

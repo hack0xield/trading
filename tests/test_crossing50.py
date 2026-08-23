@@ -326,3 +326,44 @@ class TestStrategy:
         with pytest.raises(ValueError, match="No margin readings"):
             run(Crossing50Strategy(**{**desk, "margin_log": str(empty)}),
                 short_series(), gold, config)
+
+
+class TestChartIdentity:
+    """A backtest chart and an analysis chart draw the same layers.
+
+    The heading is the only thing that distinguishes them, so it has to say
+    which one you are looking at.
+    """
+
+    def payload(self, **over) -> dict:
+        from backtester.strategies.margin_zones.report import build_payload
+        from backtester.strategies.margin_zones.margins import load_spec
+
+        bars = [h4(i, 1800 + i) for i in range(10)]
+        return build_payload(
+            symbol="EURUSD", timeframe="H4", bars=bars, pivots=[], envelopes=[],
+            prov=None, spec=load_spec("6E"), deviation="2%", initial_ratio=1.1,
+            **over,
+        )
+
+    def title_of(self, tmp_path, payload: dict) -> str:
+        """The <title> `write_report` puts on the page."""
+        import re
+
+        from backtester.strategies.margin_zones.margins import load_spec
+        from backtester.strategies.margin_zones.report import write_report
+
+        write_report(tmp_path, payload, [], [], [], load_spec("6E"),
+                     summary_name="zones.json")
+        page = (tmp_path / "chart.html").read_text(encoding="utf-8")
+        return re.search(r"<title>(.*?)</title>", page).group(1)
+
+    def test_a_backtest_names_its_strategy(self, tmp_path):
+        payload = self.payload(strategy="crossing50")
+        assert payload["strategy"] == "crossing50"
+        assert self.title_of(tmp_path, payload) == "EURUSD H4 — crossing50 backtest"
+
+    def test_an_analysis_run_says_margin_zones(self, tmp_path):
+        payload = self.payload()
+        assert payload["strategy"] is None
+        assert self.title_of(tmp_path, payload) == "EURUSD H4 — margin zones"

@@ -62,6 +62,7 @@ def build_payload(
     levels: list[dict] = (),
     trades: list[dict] = (),
     backtest: dict | None = None,
+    strategy: str = "",
 ) -> dict:
     """Everything the chart page needs, as one JSON-serialisable dict.
 
@@ -140,6 +141,7 @@ def build_payload(
             "i": prov.index, "p": round(prov.price, 6), "kind": prov.kind,
             "confirmAt": round(prov.confirm_at, 6), "bars": prov.bars_since,
         },
+        "strategy": strategy or None,
         "levels": list(levels),
         "trades": list(trades),
         "backtest": backtest or None,
@@ -186,7 +188,13 @@ def write_report(
     directory.mkdir(parents=True, exist_ok=True)
 
     if chart:
-        title = f"{payload['symbol']} {payload['timeframe']} — margin zones"
+        # A backtest and an analysis run draw the same layers, so the title is
+        # the only thing that says which of the two this page is.
+        name = payload.get("strategy")
+        title = (
+            f"{payload['symbol']} {payload['timeframe']} — {name} backtest"
+            if name else f"{payload['symbol']} {payload['timeframe']} — margin zones"
+        )
         (directory / "chart.html").write_text(render_chart(payload, title), encoding="utf-8")
 
     write_rows(directory / "pivots.csv", [
@@ -348,6 +356,8 @@ def write_zone_run(
     rollover_tz: str = "UTC",
     rollover_bars: list[Bar] | None = None,
     levels: list[dict] = (),
+    strategy: str = "",
+    rollover: bool = True,
 ) -> Path:
     """Render a backtest run as the margin-zones chart, with its trades on it.
 
@@ -367,9 +377,16 @@ def write_zone_run(
     run_dir = Path(run_dir)
     envelopes = build_envelopes(bars, pivots, spec, log, initial_ratio, code)
 
-    source = rollover_bars if rollover_bars is not None else bars
-    roll = rollover_points(source, rollover_hour, rollover_tz)
-    crossings = rollover_crossings(roll, envelopes, bars)
+    # Daily rollover points and their E50 crossings are a layer in their own
+    # right, and a strategy that never consults them should not have its chart
+    # imply otherwise. Left out, the template drops the markers, the legend
+    # entries and the crossings table with them.
+    if rollover:
+        source = rollover_bars if rollover_bars is not None else bars
+        roll = rollover_points(source, rollover_hour, rollover_tz)
+        crossings = rollover_crossings(roll, envelopes, bars)
+    else:
+        roll, crossings = [], []
 
     payload = build_payload(
         symbol=symbol,
@@ -391,6 +408,7 @@ def write_zone_run(
         levels=list(levels),
         trades=read_trades(run_dir, bars),
         backtest=read_metrics(run_dir),
+        strategy=strategy,
     )
     write_report(
         run_dir, payload, bars, pivots, envelopes, spec,

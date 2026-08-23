@@ -222,8 +222,12 @@ function ticks(min, max, n) {
 }
 
 // ---- header -----------------------------------------------------------
-$("title").textContent =
-  `${DATA.symbol} ${DATA.timeframe} — margin zones from ${DATA.pivots.length} swing pivots`;
+// A backtest and an analysis run draw the same layers, so the heading is the
+// only thing that says which this is.
+$("title").textContent = DATA.strategy
+  ? `${DATA.symbol} ${DATA.timeframe} — ${DATA.strategy} backtest, ` +
+    `${TRADES.length} orders over ${DATA.pivots.length} margin zones`
+  : `${DATA.symbol} ${DATA.timeframe} — margin zones from ${DATA.pivots.length} swing pivots`;
 $("subtitle").innerHTML = "";
 $("subtitle").append(
   `${day(DATA.times[0])} to ${day(DATA.times[N - 1])} · `,

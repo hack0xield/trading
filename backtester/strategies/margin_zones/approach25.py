@@ -54,8 +54,8 @@ class Senior25Params(StrategyParams):
     contracts_dir: str = ""           # default: configs/contracts
     margin_log: str = ""              # default: data/margins/margins.csv
     initial_ratio: float = DEFAULT_INITIAL_RATIO
-    deviation_pct: float = 1.0        # ZigZag reversal, percent of price
-    deviation_pips: float = 0.0       # in pips instead; overrides deviation_pct
+    deviation_pct: float = 1.0        # retracement confirming a ZigZag pivot, % of price
+    deviation_pips: float = 0.0       # the same threshold in pips; takes priority
     level_fraction: float = LEVEL_FRACTION        # §4.1 — the "25%"
     tolerance_fraction: float = TOLERANCE_FRACTION  # §5.2 — the "10%"
     max_wait_bars: int = 0            # drop a pattern never approached (0 = never)
@@ -75,9 +75,6 @@ class Senior25Params(StrategyParams):
     max_hold_bars: int = 0            # time stop, in bars (0 = none)
 
     # ------------------------------------------------------------- the chart
-    rollover_hour: int = 0            # hour, in rollover_tz, the daily break starts
-    rollover_tz: str = "UTC"
-
     # ------------------------------------------------------------- the reporting
     events_csv: str = ""              # write the §8 event table here
 
@@ -217,7 +214,7 @@ class Senior25Strategy(Strategy):
         """Publish what the run knew, for the chart and for later analysis.
 
         The §8 table, one row per confirmed senior extremum. The zone CSVs
-        (pivots, envelopes, rollover, crossings) come from `chart`, which
+        (pivots, envelopes) come from `chart`, which
         writes the same report layout a `plot_zones.py` run produces.
         """
         return {"events": self._events} if self._events else {}
@@ -320,9 +317,12 @@ class Senior25Strategy(Strategy):
             ),
             deviation_pct=p.deviation_pct,
             deviation_abs=p.deviation_pips * self._spec.pip_size or None,
-            rollover_hour=p.rollover_hour,
-            rollover_tz=p.rollover_tz,
             levels=self._chart_levels(self._bars),
+            # The pattern uses one number from the zone — FMZ — and never looks
+            # at a rollover point or an E50 crossing, so the chart does not
+            # draw them.
+            rollover=False,
+            strategy=self.name,
         )
 
     def _chart_levels(self, bars: list[Bar]) -> list[dict]:
