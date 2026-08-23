@@ -18,6 +18,13 @@ function node(tag, ns) {
   ns ? created.svg++ : created.html++;
   const n = {
     tag, children: [], attrs: {}, style: {}, dataset: {},
+    classList: {
+      _s: new Set(),
+      add(...c) { c.forEach((x) => this._s.add(x)); },
+      remove(...c) { c.forEach((x) => this._s.delete(x)); },
+      toggle(c) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); },
+      contains(c) { return this._s.has(c); },
+    },
     textContent: "", innerHTML: "", className: "", hidden: false,
     clientWidth: Number(process.env.VIEW_W || 900), clientHeight: 400,
     scrollLeft: Number(process.env.VIEW_X || 0), scrollWidth: 40000,

@@ -61,6 +61,7 @@ def build_payload(
     crossings: list[RolloverCrossing] = (),
     levels: list[dict] = (),
     trades: list[dict] = (),
+    backtest: dict | None = None,
 ) -> dict:
     """Everything the chart page needs, as one JSON-serialisable dict.
 
@@ -141,6 +142,7 @@ def build_payload(
         },
         "levels": list(levels),
         "trades": list(trades),
+        "backtest": backtest or None,
         "stats": stats,
         "caution": caution,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -171,8 +173,15 @@ def write_report(
     chart: bool = True,
     rollover: list[RolloverPoint] = (),
     crossings: list[RolloverCrossing] = (),
+    summary_name: str = "summary.json",
 ) -> Path:
-    """Write chart.html plus the CSVs the chart was built from."""
+    """Write chart.html plus the CSVs the chart was built from.
+
+    `summary_name` exists because a backtest run directory already has a
+    `summary.json` — its parameters and metrics — and writing the zone summary
+    over it would destroy the record of what the run actually did. A strategy
+    rendering this report into its own run directory passes another name.
+    """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -260,6 +269,6 @@ def write_report(
         "margin_log": margin_log,
         "generated": payload["generated"],
     }
-    with open(directory / "summary.json", "w", encoding="utf-8") as fh:
+    with open(directory / summary_name, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, default=str)
     return directory

@@ -356,11 +356,14 @@ class Senior25Strategy(Strategy):
             crossings=crossings,
             levels=self._chart_levels(bars),
             trades=self._chart_trades(run_dir, bars),
+            backtest=self._chart_metrics(run_dir),
         )
         write_report(
             Path(run_dir), payload, bars, pivots, envelopes, self._spec,
             margin_log=str(self._log.path), chart=True,
             rollover=roll, crossings=crossings,
+            # summary.json is the backtest's own; the zone summary goes beside it.
+            summary_name="zones.json",
         )
         return Path(run_dir) / "chart.html"
 
@@ -383,6 +386,26 @@ class Senior25Strategy(Strategy):
                 "traded": id(extremum) in self._traded,
             })
         return out
+
+    def _chart_metrics(self, run_dir) -> dict | None:
+        """The run's headline numbers, read back from the summary just written.
+
+        Taken from `summary.json` rather than recomputed, so the chart and the
+        printed report cannot quote different figures for the same run.
+        """
+        import json
+
+        path = Path(run_dir) / "summary.json"
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as fh:
+            metrics = json.load(fh).get("metrics") or {}
+        keep = (
+            "net_profit", "return_pct", "trades", "wins", "losses", "win_rate_pct",
+            "profit_factor", "payoff_ratio", "expectancy", "max_drawdown_pct",
+            "avg_bars_held", "initial_balance",
+        )
+        return {k: metrics[k] for k in keep if k in metrics} or None
 
     def _chart_trades(self, run_dir, bars: list[Bar]) -> list[dict]:
         """This run's orders, read back from the trades.csv already written."""

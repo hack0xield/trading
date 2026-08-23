@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import date, datetime, timedelta, timezone
@@ -658,3 +659,52 @@ class TestZonesReportLayout:
         from backtester.strategies.day_open import DayOpenStrategy
 
         assert DayOpenStrategy(volume=0.1).chart(Path("."), "parquet://data/bars", "H4") is None
+
+
+class TestChartSummaries:
+    """The backtest's own record must survive the zone report being written."""
+
+    def write(self, desk, gold, config, tmp_path, **params):
+        from backtester.data.results import save_result
+        from backtester.metrics import compute
+
+        strategy = Senior25Strategy(**desk, **params)
+        result = run(strategy, senior_high_series(), gold, config)
+        directory = save_result(result, compute(result).to_dict(), root=tmp_path)
+        strategy.chart(directory, "parquet://data/bars", "H4")
+        return directory
+
+    def test_summary_json_still_holds_the_backtest(self, desk, gold, config, tmp_path):
+        """`write_report` writes a summary too; it must not land on this one."""
+        directory = self.write(desk, gold, config, tmp_path)
+        summary = json.loads((directory / "summary.json").read_text())
+
+        assert summary["strategy"] == "senior25"
+        assert "metrics" in summary and "params" in summary
+        assert summary["metrics"]["trades"] == 1
+
+    def test_the_zone_summary_lands_beside_it(self, desk, gold, config, tmp_path):
+        directory = self.write(desk, gold, config, tmp_path)
+        zones = json.loads((directory / "zones.json").read_text())
+
+        assert "zigzag" in zones and "zones" in zones
+
+    def test_the_chart_quotes_the_runs_own_metrics(self, desk, gold, config, tmp_path):
+        """Read back from summary.json, never recomputed, so the chart and the
+        printed report cannot disagree about the same run."""
+        directory = self.write(desk, gold, config, tmp_path)
+        page = (directory / "chart.html").read_text(encoding="utf-8")
+        summary = json.loads((directory / "summary.json").read_text())
+
+        payload = json.loads(re.search(r'const DATA\s*=\s*(\{.*?\});', page, re.S).group(1))
+        assert payload["backtest"]["trades"] == summary["metrics"]["trades"]
+        assert payload["backtest"]["net_profit"] == summary["metrics"]["net_profit"]
+
+    def test_an_analysis_run_has_no_backtest_block(self, desk, gold, config, tmp_path):
+        """`bias=none` places no orders, so the chart shows zone stats only."""
+        directory = self.write(desk, gold, config, tmp_path, bias="none")
+        page = (directory / "chart.html").read_text(encoding="utf-8")
+        payload = json.loads(re.search(r'const DATA\s*=\s*(\{.*?\});', page, re.S).group(1))
+
+        assert payload["trades"] == []
+        assert payload["backtest"]["trades"] == 0

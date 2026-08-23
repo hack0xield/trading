@@ -73,6 +73,22 @@
     </div>
   </details>
 
+  <details id="tradesSection" hidden>
+    <summary>Orders — every BUY and SELL the strategy placed</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Side</th><th>Entry</th><th>Price</th>
+            <th>Exit</th><th>Price</th><th>Bars</th><th>Exit reason</th>
+            <th>Net P&amp;L</th><th>From extremum</th>
+          </tr>
+        </thead>
+        <tbody id="ttbody"></tbody>
+      </table>
+    </div>
+  </details>
+
   <details id="crossingsSection">
     <summary>Rollover crossing events — every True/False crossing of the 50% Ext-MZ level</summary>
     <div class="table-scroll">
@@ -228,26 +244,47 @@ if (DATA.caution) {
 }
 
 const st = DATA.stats;
-const hero = document.createElement("div");
-hero.className = "hero";
-const hl = document.createElement("div"); hl.className = "label";
-hl.textContent = "Zones drawn";
-const hv = document.createElement("div"); hv.className = "value";
-hv.textContent = String(DATA.envelopes.length);
-hero.append(hl, hv);
-$("stats").append(hero);
+const BT = DATA.backtest || null;
+const money = (v) =>
+  (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+function panel(cls, label, value, tone) {
+  const box = document.createElement("div");
+  box.className = cls;
+  const a = document.createElement("div"); a.className = "label"; a.textContent = label;
+  const b = document.createElement("div"); b.className = "value"; b.textContent = value;
+  if (tone) b.classList.add(tone);
+  box.append(a, b); $("stats").append(box);
+}
+
+// On a backtest the headline is the result, not the zone count; on an
+// analysis run there is no result and the layout is unchanged.
+if (BT) {
+  panel("hero", "Net profit", money(BT.net_profit || 0),
+        (BT.net_profit || 0) >= 0 ? "up" : "down");
+  for (const [label, value] of [
+    ["Return", ((BT.return_pct || 0) >= 0 ? "+" : "") + (BT.return_pct || 0).toFixed(2) + "%"],
+    ["Orders", `${BT.trades || 0}  (${BT.wins || 0}W / ${BT.losses || 0}L)`],
+    ["Win rate", (BT.win_rate_pct || 0).toFixed(1) + "%"],
+    ["Profit factor", (BT.profit_factor || 0).toFixed(2)],
+    ["Payoff", (BT.payoff_ratio || 0).toFixed(2) + " : 1"],
+    ["Max drawdown", (BT.max_drawdown_pct || 0).toFixed(2) + "%"],
+  ]) panel("tile", label, value);
+  panel("tile", "Zones drawn", String(DATA.envelopes.length));
+} else {
+  panel("hero", "Zones drawn", String(DATA.envelopes.length));
+}
 for (const [label, value] of [
   ["Pivots", String(DATA.pivots.length)],
   ["Median swing", DATA.medianSwing.toFixed(2) + "%"],
   ["Avg FMZ", (st.avg_fmz_pips || 0).toFixed(0) + " pips = " + DATA.fmzPct.toFixed(2) + "%"],
   ["Margin readings", String(st.distinct_margins || 0)],
   ["Reached FMZ", (st.reached_fmz_pct || 0).toFixed(0) + "%"],
-]) {
-  const t = document.createElement("div"); t.className = "tile";
-  const a = document.createElement("div"); a.className = "label"; a.textContent = label;
-  const b = document.createElement("div"); b.className = "value"; b.textContent = value;
-  t.append(a, b); $("stats").append(t);
-}
+  ...(LEVELS.length ? [[
+    "Senior extremums",
+    `${LEVELS.length}  (${LEVELS.filter((L) => L.iA !== null).length} approached)`,
+  ]] : []),
+]) panel("tile", label, value);
 
 // "Reached FMZ" is largely determined by the ZigZag threshold, not by the
 // zones — a leg travels at least `deviation` by construction, so once
@@ -320,7 +357,8 @@ function controls() {
     const mid = (sc.scrollLeft + sc.clientWidth / 2) / state.px;
     state.px = v; layout(); sc.scrollLeft = mid * v - sc.clientWidth / 2; draw();
   });
-  seg($("filter"), [["both", "Both"], ["zones", "Zones"], ["pivots", "ZigZag"]],
+  seg($("filter"),
+      [["both", "Both"], ["zones", "Zones"], ["pivots", "ZigZag"], ["none", "None"]],
       state.filter, (v) => { state.filter = v; draw(); });
   seg($("scale"), [["fit", "Fit visible"], ["full", "Full range"]],
       state.scale, (v) => { state.scale = v; draw(); });
@@ -623,6 +661,38 @@ function buildCrossingsTable() {
     }
     tb.append(tr);
   });
+}
+
+// ---- orders table -----------------------------------------------------
+// Only present on a backtest; an analysis run has no orders and the section
+// stays hidden rather than showing an empty table.
+if (TRADES.length) {
+  $("tradesSection").hidden = false;
+  const tt = $("ttbody");
+  for (const o of TRADES) {
+    const tr = document.createElement("tr");
+    const won = o.pnl > 0;
+    for (const [text, cls] of [
+      [String(o.id), ""],
+      [o.side, o.side === "BUY" ? "up" : "down"],
+      [dt(o.t0), ""],
+      [px_(o.p0), ""],
+      [dt(o.t1), ""],
+      [px_(o.p1), ""],
+      [String(o.bars), ""],
+      [o.reason.replace(/_/g, " ").toLowerCase(), ""],
+      [(o.pnl >= 0 ? "+" : "") + o.pnl.toFixed(2), won ? "up" : "down"],
+      // The tag links a trade back to the senior extremum that produced it,
+      // so a row here can be found in events.csv without a synthetic id.
+      [(o.tag || "").replace(/^senior25 /, ""), ""],
+    ]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.append(td);
+    }
+    tt.append(tr);
+  }
 }
 
 let queued = false;
