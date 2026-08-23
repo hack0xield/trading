@@ -1,8 +1,8 @@
 """Trade the 25% Control Zone approach off a senior H4 extremum.
 
 `senior.py` implements the pattern from `impl_spec/H4 Senior Extremum 25%
-Control Zone Approach Pattern.pdf` and stops where the specification stops: at the approach
-event. This file is the part the specification does not cover — what to do
+Control Zone Approach Pattern.pdf` and stops where the specification stops: at
+the approach event. This file is the part the specification does not cover — what to do
 about one — so every trading rule here is a parameter with a stated default,
 not a claim the document makes.
 
