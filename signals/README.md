@@ -55,8 +55,8 @@ The pipeline is `refresh → evaluate → compose → notify → artifacts`:
 4. **notify** — one HTTPS POST per chat, stdlib only
 5. **artifacts** — a timestamped report written to `runs/`
 
-Configuration is `configs/signals.yaml` (gitignored; see
-`configs/signals.example.yaml`). Jobs name a `strategy` and carry a typed
+Configuration is `configs/telegram/signals.yaml` (gitignored; see
+`configs/telegram/signals.example.yaml`). Jobs name a `strategy` and carry a typed
 `params` block validated at load, so a misspelled parameter fails before any
 work happens. Recipient groups are joined to jobs by name.
 
@@ -106,7 +106,7 @@ and **never installed or tested**. Two things must be fixed before use:
 
 ### 4. Secrets
 
-- Telegram token: `configs/telegram.json` or `TELEGRAM_BOT_TOKEN`
+- Telegram token: `configs/telegram/telegram.json` or `TELEGRAM_BOT_TOKEN`
   (`resolve_token()` prefers the environment, so a systemd `Environment=` line
   or an `EnvironmentFile` works without a file in the checkout).
 - Broker credentials: `mt5-mcp-server/config.json`, reused by the fetcher.
@@ -132,7 +132,7 @@ server held it. Anything touching MT5 needs the same `flock`.
 **Margin data cannot be fetched.** `cmegroup.com` returns 403 to every scripted
 request including `robots.txt`, stating scripted access is prohibited. Nothing
 in this repo attempts to defeat that. `scripts/margins.py import` reads the PDF
-a browser downloads. `configs/margins.csv` currently ends **2026-05-01** — it
+a browser downloads. `data/margins/margins.csv` currently ends **2026-05-01** — it
 must be refreshed manually, and nothing on the server will do it.
 
 **Staleness is judged from the newest bar, never from fetch success.** A fetch

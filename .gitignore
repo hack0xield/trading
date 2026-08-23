@@ -26,6 +26,8 @@ __pycache__/
 *.sqlite3
 
 # Signal delivery secrets
+configs/**/telegram.json
+configs/**/signals.yaml
 configs/telegram.json
 configs/signals.yaml
 

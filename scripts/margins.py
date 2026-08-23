@@ -483,7 +483,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--log", default="configs/margins.csv", help="margin reading log")
+    common.add_argument("--log", default="data/margins/margins.csv", help="margin reading log")
     common.add_argument("--contracts", default=None, help="contract spec directory")
     common.add_argument(
         "--initial-ratio", type=float, default=DEFAULT_INITIAL_RATIO,

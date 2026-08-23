@@ -11,7 +11,7 @@ pip install -r requirements.txt          # or: python3 -m venv .venv && .venv/bi
 
 # No MT5 data yet? Generate a synthetic series and run the whole pipeline now.
 scripts/make_synthetic.py --symbol XAUUSD --timeframe M15 --start 2022-01-01 --end 2024-12-31
-scripts/run_backtest.py --config configs/day_open_xauusd.yaml
+scripts/run_backtest.py --config configs/strategies/day_open_xauusd.yaml
 ```
 
 ## Layout
@@ -35,7 +35,7 @@ runs/           saved backtest results (gitignored)
 
 From `strategy.txt`: buy at the start of each day, 2% stop, 2% target. It lives
 in [backtester/strategies/day_open.py](backtester/strategies/day_open.py) and
-is configured by [configs/day_open_xauusd.yaml](configs/day_open_xauusd.yaml).
+is configured by [configs/strategies/day_open_xauusd.yaml](configs/strategies/day_open_xauusd.yaml).
 
 ```bash
 scripts/run_backtest.py -S day_open -s XAUUSD -t M15 \
@@ -51,13 +51,13 @@ That is the null hypothesis behaving exactly as it should.
 
 ## The senior-extremum strategy
 
-`impl_spec/H4 Senior Extremum 25% Control Zone Approach Pattern.pdf` as a run. A ZigZag
+`impl-spec/H4 Senior Extremum 25% Control Zone Approach Pattern.pdf` as a run. A ZigZag
 high that dominates the nearest high on each side (`H-1 < H0 > H+1`) anchors a
 level a quarter of the way toward the margin zone's near boundary, and the
 first candle to come back within 10% of that distance is the signal.
 
 ```bash
-scripts/run_backtest.py --config configs/senior25_eurusd.yaml --save
+scripts/run_backtest.py --config configs/strategies/senior25_eurusd.yaml --save
 ```
 
 `--save` writes the run **and the margin-zones chart it was built on**, with
@@ -138,7 +138,7 @@ conservative and optimistic, the run needs finer data — not a prettier
 assumption. Check it in one command:
 
 ```bash
-scripts/run_backtest.py -c configs/day_open_xauusd.yaml --intrabar optimistic
+scripts/run_backtest.py -c configs/strategies/day_open_xauusd.yaml --intrabar optimistic
 ```
 
 **Costs are on by default.** Spread (longs enter at ask and exit at bid; shorts
@@ -201,7 +201,7 @@ broker — and a wrong `contract_size` silently scales every P&L figure.
 ## Sweeping parameters
 
 ```bash
-scripts/optimize.py -c configs/day_open_xauusd.yaml \
+scripts/optimize.py -c configs/strategies/day_open_xauusd.yaml \
     --sweep stop_pct=1,1.5,2,2.5,3 --sweep take_pct=1,2,3 --sort sharpe --out sweep.csv
 ```
 

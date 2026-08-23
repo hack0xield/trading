@@ -1,6 +1,6 @@
 """CME margin zones — contract specs, margin readings, and the zone maths.
 
-The idea (see `impl_spec/Margin Zones.md`): exchange maintenance margin is the exchange's
+The idea (see `impl-spec/Margin Zones.md`): exchange maintenance margin is the exchange's
 own estimate of a one-day adverse move it needs collateral against. Divide it
 by the value of a pip and you get that estimate expressed as a **distance in
 pips** — how far price has to move against one contract to burn the margin.
@@ -33,7 +33,11 @@ from pathlib import Path
 
 DEFAULT_INITIAL_RATIO = 1.1
 CONTRACT_DIR = Path(__file__).resolve().parents[3] / "configs" / "contracts"
-MARGIN_LOG = Path(__file__).resolve().parents[3] / "configs" / "margins.csv"
+#: Margin readings live under `data/` with the bars, not in `configs/`: they
+#: are observations of the world, not settings, and they are appended to
+#: rather than edited. Dated snapshots sit beside this file as a record;
+#: the code always reads the undated one.
+MARGIN_LOG = Path(__file__).resolve().parents[3] / "data" / "margins" / "margins.csv"
 
 
 @dataclass(slots=True)
@@ -156,7 +160,7 @@ class MarginObservation:
 class MarginZones:
     """The computed zones for one contract at one point in time.
 
-    Terminology follows `impl_spec/MarginZones_revised.md` §8, which is strict about it:
+    Terminology follows `impl-spec/MarginZones_revised.md` §8, which is strict about it:
 
     * **FMZ** — distance from the extremum to the **near** boundary
     * **IMZ** — distance from the same extremum to the **far** boundary

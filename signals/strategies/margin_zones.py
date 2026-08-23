@@ -32,7 +32,7 @@ from .registry import register
 class MarginZonesParams(StrategyParams):
     contract: str = "6E"                        # CME contract supplying the margin
     deviation_pct: float = 2.0                  # ZigZag reversal threshold
-    margin_log: str = "configs/margins.csv"     # dated maintenance-margin readings
+    margin_log: str = "data/margins/margins.csv"     # dated maintenance-margin readings
     initial_ratio: float = 1.1                  # IMZ = FMZ * this, when IM is unknown
     rollover_timeframe: str = "M15"             # bars sampled for the pre-break price
     rollover_hour: int = 0                      # hour, in rollover_tz, the break starts

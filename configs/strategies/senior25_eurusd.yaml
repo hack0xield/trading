@@ -1,6 +1,6 @@
 # H4 Senior Extremum — 25% Control Zone approach, as a tradeable run.
 #
-#   scripts/run_backtest.py --config configs/senior25_eurusd.yaml --save
+#   scripts/run_backtest.py --config configs/strategies/senior25_eurusd.yaml --save
 #
 # The pattern (senior extremum, 25% level, approach event) is the PDF's; the
 # entry, stop and target are not — the specification stops at the event. See

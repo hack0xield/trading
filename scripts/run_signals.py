@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--config", "-c", default="configs/signals.yaml")
+    parser.add_argument("--config", "-c", default="configs/telegram/signals.yaml")
     parser.add_argument("--job", help="run only this job")
     parser.add_argument("--send", action="store_true", help="actually deliver (default: dry run)")
     parser.add_argument("--dry-run", action="store_true", help="explicit no-send (the default)")
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         print("-" * 56)
         for chat in chats:
             print(f"{chat['id']:>16}  {chat['type']:<12} {chat['title']}")
-        print("\nPaste the id(s) into configs/signals.yaml, quoted:\n")
+        print("\nPaste the id(s) into configs/telegram/signals.yaml, quoted:\n")
         print("groups:\n  ops:\n    chat_ids: [\"" + chats[0]["id"] + "\"]")
         return 0
 

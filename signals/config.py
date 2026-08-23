@@ -58,7 +58,7 @@ class SignalConfig:
 
     groups: dict[str, Group] = field(default_factory=dict)
     jobs: list[Job] = field(default_factory=list)
-    token_file: str = "configs/telegram.json"
+    token_file: str = "configs/telegram/telegram.json"
     data: str = "parquet://data/bars"     # where bars live — shared by every strategy
 
     def group(self, name: str) -> Group:
@@ -102,7 +102,7 @@ def load_config(path: str | Path) -> SignalConfig:
     if not path.exists():
         raise SystemExit(
             f"No signal config at {path}.\n"
-            f"Copy the example:  cp configs/signals.example.yaml {path}"
+            f"Copy the example:  cp configs/telegram/signals.example.yaml {path}"
         )
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() in (".yaml", ".yml"):
@@ -137,7 +137,7 @@ def load_config(path: str | Path) -> SignalConfig:
     config = SignalConfig(
         groups=groups,
         jobs=jobs,
-        token_file=raw.get("token_file", "configs/telegram.json"),
+        token_file=raw.get("token_file", "configs/telegram/telegram.json"),
         data=raw.get("data", "parquet://data/bars"),
     )
 

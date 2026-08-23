@@ -6,10 +6,10 @@
         -p volume=0.1 -p stop_pct=2 -p take_pct=2
 
     # same thing, from a config file, saving the run and its chart
-    scripts/run_backtest.py --config configs/day_open_xauusd.yaml --save
+    scripts/run_backtest.py --config configs/strategies/day_open_xauusd.yaml --save
 
     # how much of the result is the intrabar assumption?
-    scripts/run_backtest.py --config configs/day_open_xauusd.yaml --intrabar optimistic
+    scripts/run_backtest.py --config configs/strategies/day_open_xauusd.yaml --intrabar optimistic
 """
 
 from __future__ import annotations

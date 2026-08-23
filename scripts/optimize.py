@@ -7,7 +7,7 @@
         --sort sharpe
 
     # walk-forward-ish: fit on one window, then check the ranking out of sample
-    scripts/optimize.py -c configs/day_open_xauusd.yaml \
+    scripts/optimize.py -c configs/strategies/day_open_xauusd.yaml \
         --sweep stop_pct=1,2,3 --start 2022-01-01 --end 2023-12-31
 
 A word of warning that the tool cannot enforce: a grid this cheap to run is

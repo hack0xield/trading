@@ -1,6 +1,6 @@
 # The mock strategy from strategy.txt, as a reproducible run.
 #
-#   scripts/run_backtest.py --config configs/day_open_xauusd.yaml --save
+#   scripts/run_backtest.py --config configs/strategies/day_open_xauusd.yaml --save
 #
 # Every value here can be overridden on the command line, so this file holds
 # the stable part of the setup and the shell varies whatever is under test.

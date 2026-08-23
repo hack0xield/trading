@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw margin-zone envelopes over price — steps 1-5 of `impl_spec/Margin Zones.md`.
+"""Draw margin-zone envelopes over price — steps 1-5 of `impl-spec/Margin Zones.md`.
 
     scripts/plot_zones.py --symbol EURUSD --timeframe H4 --contract 6E \
         --start 2023-07-01 --deviation-pct 1.0
@@ -7,7 +7,7 @@
     1. EUR/USD chart data                --symbol / --start / --end
     2. H4                                --timeframe
     3. ZigZag local extremums            --deviation-pct or --deviation-pips
-    4. FMZ / IMZ from historical margins  configs/margins.csv, read per pivot date
+    4. FMZ / IMZ from historical margins  data/margins/margins.csv, read per pivot date
     5. [FMZ, IMZ] envelope from every extremum, recalculated at the next one
 
 No orders are placed and none are implied — this draws the levels so you can
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data", "-d", default="parquet://data/bars")
     parser.add_argument("--start")
     parser.add_argument("--end")
-    parser.add_argument("--log", default="configs/margins.csv")
+    parser.add_argument("--log", default="data/margins/margins.csv")
     parser.add_argument("--contracts", default=None, help="contract spec directory")
     parser.add_argument(
         "--deviation-pct", type=float, default=1.0,

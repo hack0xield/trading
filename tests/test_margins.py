@@ -1,6 +1,6 @@
 """Margin zones: the maths, the contract specs, and the reading log.
 
-The anchor for the whole file is the worked example in `impl_spec/Margin Zones.md`:
+The anchor for the whole file is the worked example in `impl-spec/Margin Zones.md`:
 
     MM 2900, PP 6.25, NP 2  ->  FMZ 232, IMZ 255
 
@@ -317,7 +317,7 @@ class TestMarginLog:
         assert rows[1].initial == 3300.0
 
     def test_the_shipped_log_parses(self):
-        """configs/margins.csv may be empty, but it must always be readable."""
+        """data/margins/margins.csv may be empty, but it must always be readable."""
         MarginLog().read()
 
 

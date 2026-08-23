@@ -1,6 +1,6 @@
 """Trade the 25% Control Zone approach off a senior H4 extremum.
 
-`senior.py` implements the pattern from `impl_spec/H4 Senior Extremum 25%
+`senior.py` implements the pattern from `impl-spec/H4 Senior Extremum 25%
 Control Zone Approach Pattern.pdf` and stops where the specification stops: at
 the approach event. This file is the part the specification does not cover — what to do
 about one — so every trading rule here is a parameter with a stated default,
@@ -52,7 +52,7 @@ class Senior25Params(StrategyParams):
     # ------------------------------------------------------------- the pattern
     contract: str = "6E"              # CME code the margin is read from
     contracts_dir: str = ""           # default: configs/contracts
-    margin_log: str = ""              # default: configs/margins.csv
+    margin_log: str = ""              # default: data/margins/margins.csv
     initial_ratio: float = DEFAULT_INITIAL_RATIO
     deviation_pct: float = 1.0        # ZigZag reversal, percent of price
     deviation_pips: float = 0.0       # in pips instead; overrides deviation_pct
