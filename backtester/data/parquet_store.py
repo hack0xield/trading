@@ -23,9 +23,18 @@ def _pyarrow():
         import pyarrow as pa
         import pyarrow.parquet as pq
     except ImportError as exc:  # pragma: no cover
+        # Name the interpreter. A missing dependency and a virtualenv that was
+        # not the one running the script produce the same ImportError, and
+        # without this line they are indistinguishable — the usual cause is a
+        # `#!/usr/bin/env python3` shebang resolving somewhere unexpected.
+        import sys
+
         raise ImportError(
-            "The parquet store needs pyarrow: pip install pyarrow "
-            "(or use csv://... instead)"
+            f"The parquet store needs pyarrow, and {sys.executable} does not have it.\n"
+            f"  install it:      {sys.executable} -m pip install pyarrow\n"
+            f"  or, if that is not the interpreter you meant, name it explicitly:\n"
+            f"                   .venv/bin/python scripts/run_backtest.py ...\n"
+            f"  or avoid it:     use a csv://... data URI instead"
         ) from exc
     return pa, pq
 
