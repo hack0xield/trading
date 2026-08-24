@@ -24,7 +24,7 @@ from backtester import cli  # noqa: E402
 from backtester.core.engine import Backtester  # noqa: E402
 from backtester.data.loader import load_bars, validate_bars  # noqa: E402
 from backtester.data.results import save_result  # noqa: E402
-from backtester.metrics import compute, monthly_table, text_report, trades_preview  # noqa: E402
+from backtester.metrics import casebook, compute, monthly_table, text_report, trades_preview  # noqa: E402
 from backtester.strategies import describe_all, get_strategy  # noqa: E402
 
 
@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     output.add_argument(
         "--chart-timeframe", default="H4",
         help="timeframe to draw the chart at (default H4)",
+    )
+    output.add_argument(
+        "--be-threshold", type=float, default=casebook.DEFAULT_BE_THRESHOLD,
+        help="a case returning within this many R of flat is break-even "
+             f"(default {casebook.DEFAULT_BE_THRESHOLD})",
     )
     output.add_argument("--monthly", action="store_true", help="add a monthly returns table")
     output.add_argument("--trades", type=int, default=0, help="print the first N trades")
@@ -124,6 +129,12 @@ def main(argv: list[str] | None = None) -> int:
             execution=execution.__dict__,
         )
         print(f"\nSaved to {directory}")
+
+        # The Backtest Database and its views, per impl-spec/Claude
+        # Specification_ Backtest Data Collection and Reporting.md.
+        cases = casebook.write(directory, result, be_threshold=args.be_threshold)
+        if cases:
+            print(f"Casebook: {len(cases)} cases -> {directory}/report.md")
 
         if not args.no_chart:
             data_uri = config.get("data") or cli.DEFAULT_DATA

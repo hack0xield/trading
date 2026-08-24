@@ -133,6 +133,32 @@ class Trade:
     mfe: float
     balance_after: float
     tag: str = ""
+    #: The bracket the position carried, kept so a closed trade can still say
+    #: what it was risking. Without them `abs(tp - entry) / abs(entry - sl)` —
+    #: the reward-to-risk a trade was taken for — is unrecoverable afterwards.
+    sl: float | None = None
+    tp: float | None = None
+
+    @property
+    def risk(self) -> float | None:
+        """Distance from entry to stop, in price units."""
+        return None if self.sl is None else abs(self.entry_price - self.sl)
+
+    @property
+    def planned_rr(self) -> float | None:
+        """Reward-to-risk the trade was taken for, from its own bracket."""
+        risk = self.risk
+        if not risk or self.tp is None:
+            return None
+        return abs(self.tp - self.entry_price) / risk
+
+    @property
+    def r_multiple(self) -> float | None:
+        """What it actually returned, in units of the risk taken."""
+        risk = self.risk
+        if not risk:
+            return None
+        return (self.exit_price - self.entry_price) * self.side.sign / risk
 
     @property
     def net_pnl(self) -> float:
@@ -169,6 +195,8 @@ class Trade:
             "mfe": round(self.mfe, 5),
             "balance_after": round(self.balance_after, 2),
             "tag": self.tag,
+            "sl": self.sl,
+            "tp": self.tp,
         }
 
 

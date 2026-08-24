@@ -117,6 +117,42 @@ signals survive; on EUR/USD H4 over 2022-2026 that turns into 60 trades at a
 38% win rate against a 1.05 payoff, so -1.1% over the period. The chart the run
 writes shows the drawn crossings, and `run.log` reports both counts.
 
+## The casebook
+
+`--save` also writes the Backtest Database and its views, per
+`impl-spec/Claude Specification_ Backtest Data Collection and Reporting.md`:
+
+    casebook.csv                 one row per trade, the specification's columns
+    casebook_total_statistics.csv
+    casebook_direction.csv       Long / Short
+    casebook_models.csv          the strategy name
+    casebook_sessions.csv        Asia / London / New York / ...
+    casebook_weekdays.csv
+    casebook_months.csv
+    report.md                    the summary, built from the table above
+
+The six tables are *views* over `casebook.csv`, never computed separately, so
+they cannot disagree with it or with each other — a test asserts every one of
+them totals the database.
+
+Three things the specification leaves open, decided here:
+
+* **Break-even** is any case returning within `--be-threshold` R of flat
+  (default 0.1). The document uses BE for 17% of its own cases and never
+  defines it. It matters: winrate is `W / (W + L)` with BE **excluded** from
+  the denominator, and on the reference data the same 184 cases score 78.95%
+  that way against 64.17% counted over all trades.
+* **Models** carries the strategy name. In the reference book it is a
+  discretionary label (BOS, Inversion, Engulfing) chosen by eye.
+* **Sessions** keep the specification's five windows and fill the twelve hours
+  they miss with buckets named after themselves (`18:00-03:00`), so every
+  trade is classified. Hours are read off the bar stamps, which are
+  broker-server time — this broker's clock follows New York's daylight saving,
+  so sessions sit at stable broker-local hours and wobble in UTC.
+
+The five review columns (`BE Reason`, `News Event`, `Mistake`, `To Improve`,
+`Needs validation`) are written empty. No backtest can fill them.
+
 ## Writing another strategy
 
 One file, one decorated class. The `@register` decorator is what makes

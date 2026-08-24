@@ -337,6 +337,8 @@ class SimulatedBroker:
             exit_time=time,
             exit_price=price,
             reason=reason,
+            sl=position.sl,
+            tp=position.tp,
             gross_pnl=gross,
             commission=position.commission,
             swap=position.swap,
