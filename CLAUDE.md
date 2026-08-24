@@ -34,6 +34,14 @@ trade-offs.
 - All datetimes are timezone-aware UTC. Bars carry their **open** time.
 - MT5 bar timestamps are **broker-server time** (usually UTC+2/+3), stored
   verbatim and labelled UTC. Strategies correct for it via `session_tz`.
+  `scripts/fetch_mt5.py` measures the offset from the live terminal on every
+  fetch and records it in `configs/broker.json`; read it with
+  `backtester.utils.timeutil.broker_offset`. **The offset is seasonal** —
+  MetaQuotes-Demo runs EET/EEST, UTC+2 in winter and UTC+3 in summer — so the
+  recorded number describes the clock at `measured_at`, not the whole history.
+  Because that clock shifts with New York, trading sessions sit at stable
+  *broker-local* hours; read hours off the bars' own stamps rather than
+  converting.
 - Bar prices are **bid**. Longs enter at ask, shorts exit at ask.
 - A new strategy is one file in `strategies/` with `@register`, plus a line in
   `strategies/__init__.py`.

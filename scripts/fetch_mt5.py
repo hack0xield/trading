@@ -36,6 +36,96 @@ from backtester.utils.timeutil import parse_dt  # noqa: E402
 CONFIG_PATH = ROOT / "mt5-mcp-server" / "config.json"
 
 
+BROKER_CLOCK_PATH = ROOT / "configs" / "broker.json"
+
+#: Real server clocks run between these. A tick left stale over a weekend
+#: differences into something far outside the range, which is what makes the
+#: check worth having.
+OFFSET_BOUNDS = (-12.0, 14.0)
+
+
+def server_offset_hours(server_epoch: int, now_utc: datetime) -> float:
+    """Hours the terminal's clock runs ahead of true UTC.
+
+    MT5 reports every time — ticks and bars alike — as the server's *wall
+    clock* encoded as though it were UTC. Differencing one against real UTC
+    therefore measures the server's offset directly.
+
+    Snapped to a quarter hour: no exchange runs on a stranger offset, and the
+    raw difference carries network latency and whatever drift the local clock
+    has.
+    """
+    raw = (server_epoch - now_utc.timestamp()) / 3600.0
+    return round(raw * 4) / 4
+
+
+def plausible_offset(hours: float) -> bool:
+    return OFFSET_BOUNDS[0] <= hours <= OFFSET_BOUNDS[1]
+
+
+def read_server_clock(mt5, symbol: str, now_utc: datetime | None = None) -> dict | None:
+    """Measure the broker's clock from its latest tick, or None if it cannot.
+
+    **This measurement assumes the market is open.** One tick gives one number
+    and there are two unknowns in it — the clock offset and how stale the tick
+    is — so a quote left sitting since Friday's close is indistinguishable from
+    a live quote on a clock that many hours behind. There is no way to separate
+    them from a single reading.
+
+    What that does rule out is a *long* staleness: a weekend-old tick differences
+    into tens of hours, far outside any real timezone, and is rejected. A tick a
+    couple of hours old is the case that survives, so `main` compares the result
+    against the previously recorded value and says so when they disagree rather
+    than quietly replacing a good measurement with one taken after the close.
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None or not getattr(tick, "time", 0):
+        return None
+
+    offset = server_offset_hours(int(tick.time), now_utc)
+    if not plausible_offset(offset):
+        return None
+
+    account = mt5.account_info()
+    terminal = mt5.terminal_info()
+    return {
+        "utc_offset_hours": offset,
+        "server": getattr(account, "server", "") if account else "",
+        "company": getattr(terminal, "company", "") if terminal else "",
+        "measured_at": now_utc.replace(microsecond=0).isoformat(),
+        "measured_from": symbol,
+        "_note": (
+            "Hours the broker's server clock runs ahead of UTC, AS AT "
+            "`measured_at`. MT5 stamps bars with that clock and labels them UTC, "
+            "so bar timestamps in data/ are this many hours ahead of the real "
+            "time they describe. Server clocks usually observe daylight saving "
+            "(MetaQuotes-Demo runs EET/EEST: UTC+2 in winter, UTC+3 in summer), "
+            "so this is the offset now, not a constant for the whole history -- "
+            "do not subtract it from an old timestamp. Written on every fetch, "
+            "and only trustworthy when the market was open at the time."
+        ),
+    }
+
+
+def recorded_offset(path: Path = None) -> float | None:
+    """The offset already on file, if any."""
+    file = Path(path or BROKER_CLOCK_PATH)
+    if not file.exists():
+        return None
+    try:
+        value = json.loads(file.read_text(encoding="utf-8")).get("utc_offset_hours")
+    except (OSError, ValueError):
+        return None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def write_server_clock(clock: dict, path: Path = BROKER_CLOCK_PATH) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(clock, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def connect(mt5) -> None:
     config = {}
     if CONFIG_PATH.exists():
@@ -244,6 +334,33 @@ def main(argv: list[str] | None = None) -> int:
         if args.dump_spec:
             path = save_instrument(spec_from_mt5(mt5, info))
             print(f"Wrote contract spec to {path}")
+
+        # Measure the server clock while the terminal is open. Every bar this
+        # script writes is stamped with that clock and labelled UTC, so without
+        # the offset recorded here the timestamps in data/ cannot be turned back
+        # into real times — and anything reading an hour off them, like a
+        # trading-session breakdown, is guessing.
+        clock = read_server_clock(mt5, args.symbol)
+        if clock is None:
+            print(
+                "  ! could not measure the broker clock (market shut, or no recent "
+                f"tick for {args.symbol}); leaving {BROKER_CLOCK_PATH.name} as it is"
+            )
+        else:
+            was = recorded_offset()
+            now_offset = clock["utc_offset_hours"]
+            if was is not None and was != now_offset:
+                print(
+                    f"  ! broker clock now reads UTC{now_offset:+g}, was UTC{was:+g}. "
+                    f"If the market was shut just now the new figure is a stale "
+                    f"quote, not a clock change — check before trusting it."
+                )
+            write_server_clock(clock)
+            print(
+                f"Broker clock: UTC{now_offset:+g}"
+                f"{' (' + clock['server'] + ')' if clock['server'] else ''}"
+                f" -> {BROKER_CLOCK_PATH}"
+            )
 
         start = parse_dt(args.start)
         end = parse_dt(args.end) if args.end else datetime.now(timezone.utc)

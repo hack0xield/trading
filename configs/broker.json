@@ -1,0 +1,8 @@
+{
+  "utc_offset_hours": 3.0,
+  "server": "MetaQuotes-Demo",
+  "company": "MetaQuotes Ltd.",
+  "measured_at": "2026-08-24T13:18:37+00:00",
+  "measured_from": "EURUSD",
+  "_note": "Hours the broker's server clock runs ahead of UTC. MT5 stamps bars with that clock and labels them UTC, so bar timestamps in data/ are this many hours ahead of the real time they describe. Written by scripts/fetch_mt5.py on every fetch, and only trustworthy when the market was open at the time -- see `measured_at`."
+}
