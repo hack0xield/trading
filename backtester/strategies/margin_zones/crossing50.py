@@ -318,6 +318,85 @@ class Crossing50Strategy(Strategy):
             path.parent.mkdir(parents=True, exist_ok=True)
             write_rows(path, self._signal_rows)
 
+    # ------------------------------------------------------------- the chart
+
+    def chart(self, run_dir, data_uri: str, timeframe: str):
+        """The margin-zones chart, with this run's trades and their setups on it.
+
+        The zones drawn from confirmed pivots are the familiar analysis picture
+        and are kept, along with the daily rollover points that are this
+        strategy's observation stream. What the strategy actually traded is a
+        different thing — a zone anchored on the provisional candidate — so
+        each traded setup is drawn as its own layer: a marker on the anchor and
+        the band the trade was aiming through, from `e50` to `MZ100`.
+
+        The crossing rings on the base chart come from the confirmed envelopes
+        and will not line up one-for-one with the entries. That is the gap this
+        strategy exists to close, not a drawing error.
+        """
+        from .report import write_zone_run
+
+        if not self._bars or not self.tracker.zones.pivots:
+            return None
+        p = self.p
+        return write_zone_run(
+            run_dir,
+            symbol=self._symbol,
+            timeframe=self._timeframe,
+            bars=self._bars,
+            pivots=self.tracker.zones.pivots,
+            spec=self._spec,
+            log=self._log,
+            initial_ratio=p.initial_ratio,
+            code=self._code,
+            deviation=(
+                f"{p.deviation_pips:g} pips" if p.deviation_pips else f"{p.deviation_pct:g}%"
+            ),
+            deviation_pct=p.deviation_pct,
+            deviation_abs=p.deviation_pips * self._spec.pip_size or None,
+            rollover_hour=p.rollover_hour,
+            rollover_tz=p.rollover_tz,
+            levels=self._chart_levels(),
+            strategy=f"{self.name} [{p.variant}]",
+        )
+
+    def _chart_levels(self) -> list[dict]:
+        """One entry per traded setup: its anchor, its e50 and its target.
+
+        Only the zone versions that produced a trade are drawn. There are 800-odd
+        versions in a run — every strict extension of the candidate makes one —
+        and drawing them all would bury the chart in levels that never traded.
+        """
+        from bisect import bisect_right
+
+        from ...utils.timeutil import parse_dt
+
+        times = [int(b.time.timestamp()) for b in self._bars]
+
+        def index_at(stamp: str) -> int:
+            return max(0, bisect_right(times, int(parse_dt(stamp).timestamp())) - 1)
+
+        by_id = {v.zone_id: v for v in self.tracker.zones.versions}
+        out = []
+        for case in self._trade_rows:
+            zone = by_id.get(case["origin_zone_id"])
+            if zone is None:
+                continue
+            out.append({
+                "kind": zone.kind.upper(),
+                "iE": zone.anchor_index,
+                "pE": round(zone.anchor_price, 6),
+                "iC": index_at(case["signal_time"]),
+                "lvl": round(zone.e50, 6),
+                # The band is the move the trade was taken for: from the level
+                # it entered on to the boundary it was aiming at.
+                "lo": round(min(zone.e50, zone.mz100), 6),
+                "hi": round(max(zone.e50, zone.mz100), 6),
+                "iA": index_at(case["entry_time"]),
+                "traded": True,
+            })
+        return out
+
     def artifacts(self) -> dict[str, list[dict]]:
         """§12's three records."""
         z = self.tracker.zones

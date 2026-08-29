@@ -339,3 +339,46 @@ class TestVariants:
         result = run(strategy, self.adverse_setup(), gold, config)
         assert all(c["exit_reason"] != "candidate_update"
                    for c in result.artifacts["cases"])
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+class TestChart:
+    """The run draws the margin-zones chart, not the generic price plot.
+
+    This regressed once: rewriting the strategy dropped its `chart` hook and
+    every run silently fell back to price-and-trades, losing the zones, the
+    ZigZag and the rollover points. Nothing failed — the chart was simply
+    emptier — so it is pinned here.
+    """
+
+    def payload(self, desk, gold, config, tmp_path) -> dict:
+        import re
+        import subprocess
+
+        from backtester.data.results import save_result
+        from backtester.metrics import compute
+
+        strategy = Crossing50Strategy(**desk)
+        result = run(strategy, short_setup(), gold, config)
+        directory = save_result(result, compute(result).to_dict(), root=tmp_path)
+        assert strategy.chart(directory, "parquet://data/bars", "H4") is not None
+        page = (directory / "chart.html").read_text(encoding="utf-8")
+        return json.loads(re.search(r'(\{"symbol".*?\})\s*;', page, re.S).group(1))
+
+    def test_the_zone_layers_are_present(self, desk, gold, config, tmp_path):
+        payload = self.payload(desk, gold, config, tmp_path)
+        assert payload["pivots"], "the ZigZag went missing"
+        assert payload["envelopes"], "the margin zones went missing"
+        assert payload["rollover"], "the rollover observations went missing"
+
+    def test_each_traded_setup_is_drawn(self, desk, gold, config, tmp_path):
+        """One level per trade — its anchor, its e50 and the band to MZ100."""
+        payload = self.payload(desk, gold, config, tmp_path)
+        assert len(payload["levels"]) == len(payload["trades"]) == 1
+        level = payload["levels"][0]
+        assert level["kind"] == "HIGH"
+        assert level["lo"] < level["lvl"]        # the band runs down to MZ100
+
+    def test_the_title_names_the_variant(self, desk, gold, config, tmp_path):
+        payload = self.payload(desk, gold, config, tmp_path)
+        assert "crossing50" in payload["strategy"] and KEEP_OPEN in payload["strategy"]
