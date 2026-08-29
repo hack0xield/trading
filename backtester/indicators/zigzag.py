@@ -114,6 +114,43 @@ def zigzag(
     return pivots
 
 
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """The extreme a leg has reached so far — a pivot in waiting.
+
+    Deliberately not a `Pivot`: it carries no confirmation, and the price may
+    still move. `leg` counts search direction changes, so two candidates with
+    the same `leg` are successive readings of the same developing extreme,
+    and a change of `leg` means the previous one was resolved and a new search
+    began in the other direction.
+    """
+
+    leg: int
+    kind: str               # "high" or "low" — what it would become
+    price: float
+    index: int
+    time: datetime
+
+    @property
+    def is_high(self) -> bool:
+        return self.kind == "high"
+
+    @property
+    def direction(self) -> int:
+        """Which way a Margin Zone is projected from it: down from a high."""
+        return -1 if self.is_high else 1
+
+    def extends(self, other: "Candidate | None") -> bool:
+        """Is this a *strict* price extension of the same developing extreme?
+
+        Equal extremes move the ZigZag's index to the later bar but are not
+        extensions: nothing about the level they anchor has changed.
+        """
+        if other is None or other.leg != self.leg:
+            return False
+        return self.price > other.price if self.is_high else self.price < other.price
+
+
 class ZigZagTracker:
     """`zigzag()` fed one bar at a time, for strategies running inside the engine.
 
@@ -132,7 +169,7 @@ class ZigZagTracker:
 
     __slots__ = (
         "pivots", "_deviation_pct", "_deviation_abs", "_direction",
-        "_hi", "_hi_i", "_hi_time", "_lo", "_lo_i", "_lo_time", "_count",
+        "_hi", "_hi_i", "_hi_time", "_lo", "_lo_i", "_lo_time", "_count", "_leg",
     )
 
     def __init__(
@@ -152,6 +189,7 @@ class ZigZagTracker:
         self._hi_i = self._lo_i = 0
         self._hi_time = self._lo_time = None
         self._count = 0
+        self._leg = 0
 
     def _threshold(self, price: float) -> float:
         if self._deviation_abs is not None:
@@ -161,6 +199,30 @@ class ZigZagTracker:
     @property
     def bars_seen(self) -> int:
         return self._count
+
+    @property
+    def candidate(self) -> "Candidate | None":
+        """The running extreme of the leg in progress — the pivot it may become.
+
+        This is knowable now, from closed bars only: it is the highest high (or
+        lowest low) since the last confirmation. It is *not* a pivot, and it can
+        still be extended or replaced, which is exactly why it is a separate
+        type — but a strategy that waits for confirmation is discarding
+        information it already holds.
+
+        `None` before the first pivot, while the tracker has no search direction
+        and is watching both ends at once.
+        """
+        if self._direction == 0:
+            return None
+        seeking_high = self._direction > 0
+        return Candidate(
+            leg=self._leg,
+            kind="high" if seeking_high else "low",
+            price=self._hi if seeking_high else self._lo,
+            index=self._hi_i if seeking_high else self._lo_i,
+            time=self._hi_time if seeking_high else self._lo_time,
+        )
 
     def push(self, bar: Bar) -> list[Pivot]:
         """Feed the next *closed* bar. Returns the pivots it confirmed (0 or 1)."""
@@ -186,10 +248,12 @@ class ZigZagTracker:
         if fell:
             pivot = Pivot(self._hi_i, self._hi_time, self._hi, "high", i, bar.time)
             self._direction = -1
+            self._leg += 1
             self._lo, self._lo_i, self._lo_time = bar.low, i, bar.time
         elif rose:
             pivot = Pivot(self._lo_i, self._lo_time, self._lo, "low", i, bar.time)
             self._direction = 1
+            self._leg += 1
             self._hi, self._hi_i, self._hi_time = bar.high, i, bar.time
         else:
             return []

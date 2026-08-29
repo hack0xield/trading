@@ -13,6 +13,7 @@ See `impl-spec/MarginZones_revised.md` for the specification this implements.
 
 from .approach25 import Senior25Params, Senior25Strategy, tag_for
 from .crossing import CrossingSignal, CrossingTracker
+from .provisional import ProvisionalZoneTracker, ZoneVersion
 from .crossing50 import Crossing50Params, Crossing50Strategy
 from .envelopes import Envelope, build_envelopes, envelope_from, margin_coverage, summarise
 from .margins import (
@@ -49,7 +50,7 @@ __all__ = [
     "LEVEL_FRACTION", "MARGIN_LOG", "MarginLog",
     "MarginObservation", "MarginZones", "RolloverCrossing", "RolloverPoint",
     "ApproachEvent", "Crossing50Params", "Crossing50Strategy", "CrossingSignal",
-    "CrossingTracker", "RolloverTracker", "Senior25Params", "Senior25Strategy", "SeniorApproachTracker",
+    "CrossingTracker", "ProvisionalZoneTracker", "RolloverTracker", "ZoneVersion", "Senior25Params", "Senior25Strategy", "SeniorApproachTracker",
     "SeniorExtremum", "TOLERANCE_FRACTION",
     "build_envelopes", "build_payload", "compute_zones", "envelope_at",
     "envelope_from",

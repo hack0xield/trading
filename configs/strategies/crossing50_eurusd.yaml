@@ -1,10 +1,13 @@
-# True 50% Crossing -> 100% MZ, as a reproducible run.
+# Provisional ZigZag candidate -> E50 crossing -> MZ100.
 #
 #   scripts/run_backtest.py --config configs/strategies/crossing50_eurusd.yaml --save
 #
-# The specification is impl-spec/Backtest Strategy(crossing50).pdf. Unlike the senior-
-# extremum pattern it defines the trade as well as the signal, so there is
-# very little here to choose: entry, target and stop all follow from the zone.
+# Specification: impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md, which
+# supersedes impl-spec/Backtest Strategy(crossing50).pdf for the anchor. The
+# zone hangs off the provisional ZigZag candidate rather than a confirmed
+# pivot, so it is knowable immediately; every strict extension of that
+# candidate freezes a new zone version, and a crossing only counts when both
+# rollover points were measured against the same one.
 
 strategy: crossing50
 symbol: EURUSD
@@ -32,9 +35,10 @@ params:
                            # crossing is created across it (spec §5).
 
   # --- the trading -------------------------------------------------------
-  one_position: true       # one crossing at a time
-  max_hold_bars: 0         # the spec has no time exit: hold to TP or SL
-  trade: true              # false = detect only, still writes signals.csv
+  variant: KEEP_OPEN       # or CLOSE_ON_CANDIDATE_UPDATE. The only difference is
+                           # whether a later strict extension of the originating
+                           # candidate closes an open trade.
+  trade: true              # false = detect only, still records signals
 
 execution:
   initial_balance: 100000
