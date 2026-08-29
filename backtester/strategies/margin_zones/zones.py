@@ -22,6 +22,13 @@ INITIAL = "initial"
 STRICT_EXTENSION = "strict_extension"
 ZONE_INPUT_CHANGE = "zone_input_change"
 
+#: The two levels a crossing can be measured against. `mz50` is the zone's own
+#: midpoint and is what the strategy trades; `e50` sits half as far from the
+#: anchor and is carried for analysis.
+MZ50 = "mz50"
+E50 = "e50"
+SIGNAL_LEVELS = (MZ50, E50)
+
 ZonesFor = Callable[[Candidate], Optional[MarginZones]]
 
 
@@ -73,16 +80,28 @@ class ZoneVersion:
 
     @property
     def mz50(self) -> float:
-        """Halfway between the boundaries."""
+        """The zone's own midpoint, `anchor +- (dFMZ + dIMZ) / 2`.
+
+        Inside the band, halfway between the boundaries.
+        """
         return (self.mz0 + self.mz100) / 2.0
 
     @property
     def e50(self) -> float:
         """The 50% Extremum-to-50% MZ level, `anchor +- (dFMZ + dIMZ) / 4`.
 
-        Sits between the anchor and the near boundary, outside the zone itself.
+        Halfway from the anchor to `mz50`, so outside the band on the anchor's
+        side and about half as far from the anchor.
         """
         return (self.anchor_price + self.mz50) / 2.0
+
+    def level(self, name: str) -> float:
+        """One of the two named signal levels, by name."""
+        if name == MZ50:
+            return self.mz50
+        if name == E50:
+            return self.e50
+        raise ValueError(f"level must be one of {list(SIGNAL_LEVELS)}, got {name!r}")
 
     @property
     def lo(self) -> float:
@@ -106,8 +125,8 @@ class ZoneVersion:
             "candidate_time": self.anchor_time.isoformat(),
             "known_time": self.known_time.isoformat(),
             "mz0": self.mz0,
-            "e50": self.e50,
             "mz50": self.mz50,
+            "e50": self.e50,
             "mz100": self.mz100,
             "d_fmz_pips": round(self.zones.fmz, 2),
             "d_imz_pips": round(self.zones.imz, 2),

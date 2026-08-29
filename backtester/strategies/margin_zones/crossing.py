@@ -1,13 +1,15 @@
-"""Rollover crossings of a zone's E50 level.
+"""Rollover crossings of a zone's signal level.
 
-Two consecutive rollover observations sitting strictly either side of `e50`,
-both measured against the *same* immutable zone version. That last clause is
-the safeguard: the anchor moves, so without it a level sliding under a static
-price would register as a crossing price never made. When a new version appears
-the baseline is dropped.
+Two consecutive rollover observations sitting strictly either side of the
+level, both measured against the *same* immutable zone version. That last
+clause is the safeguard: the anchor moves, so without it a level sliding under
+a static price would register as a crossing price never made. When a new
+version appears the baseline is dropped.
 
-A crossing *toward* the zone — down through the level from a high, up from a
-low — is classified True; the crossing back out toward the anchor is False.
+The level is named per run — `mz50`, the zone's midpoint, or `e50`, half as far
+from the anchor. A crossing *toward* the zone (down through the level from a
+high, up from a low) is classified True; the crossing back out toward the
+anchor is False.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from datetime import datetime
 
 from ...core.types import Bar
 from .rollover import RolloverPoint, RolloverTracker
-from .zones import ZoneTracker, ZoneVersion
+from .zones import MZ50, SIGNAL_LEVELS, ZoneTracker, ZoneVersion
 
 #: Continuity limit in calendar days. A weekend collapses into one skipped day,
 #: so consecutive points routinely span 2-3 days; wider than this is a hole in
@@ -33,6 +35,21 @@ class Crossing:
     previous: RolloverPoint
     current: RolloverPoint
     index: int              # bar on which the pair completed
+    level_name: str         # which of the zone's levels was crossed
+
+    @property
+    def level(self) -> float:
+        """The price the pair straddled."""
+        return self.zone.level(self.level_name)
+
+    def stop_for(self, entry: float) -> float:
+        """The stop that mirrors the target distance about the price paid.
+
+        Measured from the fill rather than from the signal, so reward and risk
+        are 1:1 against what was really risked whatever the open gapped to.
+        """
+        risk = abs(entry - self.zone.mz100)
+        return entry - risk if self.is_long else entry + risk
 
     @property
     def toward_zone(self) -> bool:
@@ -70,10 +87,30 @@ class Crossing:
             "day": self.current.day.isoformat(),
             "price": self.current.price,
             "crossing_time": self.time.isoformat(),
+            "level_name": self.level_name,
+            "level": self.level,
+            "mz50": self.zone.mz50,
             "e50": self.zone.e50,
             "mz100": self.zone.mz100,
             "direction": self.direction,
             "classification": self.classification,
+        }
+
+    def as_signal_row(self, status: str) -> dict:
+        return {
+            "zone_id": self.zone.zone_id,
+            "candidate_leg_id": self.zone.leg,
+            "candidate_version": self.zone.version,
+            "direction": "LONG" if self.is_long else "SHORT",
+            "previous_observation_time": self.previous.roll_time.isoformat(),
+            "previous_observation_price": self.previous.price,
+            "current_observation_time": self.current.roll_time.isoformat(),
+            "current_observation_price": self.current.price,
+            "signal_time": self.time.isoformat(),
+            "level_name": self.level_name,
+            "level": self.level,
+            "mz100": self.zone.mz100,
+            "status": status,
         }
 
 
@@ -93,7 +130,11 @@ class CrossingTracker:
         rollover_hour: int = 0,
         rollover_tz: str = "UTC",
         max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
+        level: str = MZ50,
     ):
+        if level not in SIGNAL_LEVELS:
+            raise ValueError(f"level must be one of {list(SIGNAL_LEVELS)}, got {level!r}")
+        self.level = level
         self.zones = ZoneTracker(zones_for, pip_size, deviation_pct, deviation_abs)
         self.rollover = RolloverTracker(rollover_hour, rollover_tz)
         self._max_gap = max(0, int(max_gap_days))
@@ -151,10 +192,12 @@ class CrossingTracker:
         if point.roll_time <= zone.known_time:
             return None
 
-        before = self._prev.price - zone.e50
-        after = point.price - zone.e50
+        level = zone.level(self.level)
+        before = self._prev.price - level
+        after = point.price - level
         # Strictly opposite sides; sitting exactly on the level is neutral.
         if before * after >= 0:
             return None
 
-        return Crossing(zone=zone, previous=self._prev, current=point, index=index)
+        return Crossing(zone=zone, previous=self._prev, current=point,
+                        index=index, level_name=self.level)

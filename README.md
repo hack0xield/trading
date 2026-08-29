@@ -53,7 +53,6 @@ That is the null hypothesis behaving exactly as it should.
 
 ## The margin-zone strategy
 
-`impl-spec/MarginZones_revised.md` and
 `impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`, as one forward pass.
 
 ```bash
@@ -69,26 +68,66 @@ when both rollover observations were measured against the same version. That is
 what stops a level sliding under a static price and registering as a crossing
 price never made.
 
-`place_orders` is `false` by default, and the trading rule behind it is a stub:
-the run records and draws the components — the ZigZag, the zone versions, the
-daily CFD rollover points and their True/False crossings of `e50` — and places
-no orders.
+Entry is a True crossing of **MZ50** — the zone's own midpoint,
+`anchor ± (dFMZ + dIMZ) / 2` — toward the zone. Target is `MZ100`, and the stop
+mirrors that distance about the actual fill, so risk and reward are 1:1 against
+the price really paid. `E50`, the 50% Extremum-to-50% MZ level at half that
+distance from the anchor, is recorded on every version and selectable with
+`signal_level: e50`, but the specification's entry is MZ50.
 
-`--save` writes the chart alongside `zones.csv`, `pivots.csv`, `rollover.csv`
-and `crossings.csv`. Every row in them was knowable at the timestamp it carries.
-A zone is drawn from the bar that made it knowable, not back to the extreme it
-names, so the picture and a live run see the same thing; the chart has Show/Hide
-controls for the ZigZag, the zones, the rollover layer and the orders.
+`place_orders: false` runs the same pass with the trading rule off: the ZigZag,
+the zone versions, the daily rollover points and their True/False crossings are
+recorded and drawn, and nothing is ordered.
+
+`--save` writes the chart alongside `zones.csv`, `pivots.csv`, `rollover.csv`,
+`crossings.csv`, `signals.csv` and `cases.csv`. Every row was knowable at the
+timestamp it carries. A zone is drawn from the bar that made it knowable, not
+back to the extreme it names, and each candidate is joined to the pivot that
+opened its leg by a dashed line, so the repainting is visible rather than
+hidden. The chart has Show/Hide controls for the ZigZag, the zones, the rollover
+layer and the orders.
 
 Strategies that do not override `Strategy.chart` get the generic
 price-and-trades chart from `scripts/plot_run.py` instead, and `--no-chart`
 skips it.
 
-**Worth knowing.** `e50` must sit closer to the anchor than the ZigZag
-threshold, or price confirms the pivot and flips the leg before it can reach the
-signal level. On EUR/USD H4 at a 2% deviation the threshold is ~220 pips against
-~102 to `e50`, and a 2022-2026 run produces 831 zone versions on 64 confirmed
-pivots, 1,205 rollover points and 177 crossings (108 True).
+### What the MZ50 entry does to the trade
+
+EUR/USD H4, 2% deviation, 2022-2026, contract `6E`:
+
+| | MZ50 (spec) | E50 |
+|---|---:|---:|
+| crossings | 16 | 167 |
+| entered trades | 10 | 78 |
+| median risk | **5.3 pips** | ~115 pips |
+| win rate | 30.0% | 46.2% |
+| net P&L | -9.40 | -693.77 |
+
+Three structural facts behind that, none of them a bug:
+
+**MZ50 is barely reachable.** It sits `(dFMZ + dIMZ) / 2` ≈ 185 pips from the
+anchor, against a 2% ZigZag threshold of ≈ 220 pips. Price usually confirms the
+pivot and flips the leg before it gets there, which is why 831 zone versions
+yield 16 crossings. E50, at half the distance, yields 167.
+
+**The stop always lands on MZ0.** `stop = 2·entry − MZ100`, and
+`2·MZ50 − MZ100 = MZ0` exactly. A fill `d` past MZ50 puts the stop `2d` past
+MZ0, never nearer the anchor.
+
+**The trades are tiny.** With `initial_ratio 1.1` the whole zone is
+`MZ = 0.1 × FMZ` wide, so MZ50 to MZ100 is `0.05 × FMZ` ≈ 10 pips. Measured
+risk ran 2.7 to 26.2 pips, median 5.3, against a 1.9-pip spread. At that size
+the result is microstructure, not the setup: re-running with zero spread moves
+net P&L from -9.40 to -13.20, i.e. the sign of individual trades flips on
+rounding. Any conclusion about the edge needs a wider zone — a real initial
+margin instead of the 1.1 placeholder — or finer data than H4 bars.
+
+**The two variants cannot differ under MZ50.** `KEEP_OPEN` and
+`CLOSE_ON_CANDIDATE_UPDATE` return byte-identical results (10 trades, 3W/7L,
+-9.40) and zero `candidate_update` exits. A strict adverse extension is beyond
+the anchor by definition, and the stop sits on MZ0, `dFMZ` nearer — so the stop
+always resolves first. Under `signal_level: e50` the stop lands just past the
+anchor and variant B does fire, which is where its tests run.
 
 ## The casebook
 

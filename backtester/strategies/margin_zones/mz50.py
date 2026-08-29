@@ -1,27 +1,48 @@
-"""Margin-zone observation run: ZigZag, zone versions and rollover crossings.
+"""Provisional ZigZag candidate -> MZ50 crossing -> MZ100.
 
-One forward pass over the bars. Every level it records was knowable from closed
-bars at the moment it was recorded, and nothing is redrawn afterwards, so the
-chart shows what a live run would have seen rather than what hindsight makes of
-it.
+Implements `impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`. One forward
+pass: every level it records was knowable from closed bars at the moment it was
+recorded, and nothing is redrawn afterwards.
 
-Order placement is a hook that does nothing yet. With `place_orders: false` the
-run is a drawing pass over the support components; with it true, `_act_on` is
-where a trading rule goes.
+The Margin Zone is anchored on the ZigZag *candidate*, so it is knowable
+immediately; every strict extension of that candidate freezes a new immutable
+version, and a crossing counts only when both rollover observations were
+measured against the same one.
+
+Entry is a True crossing of `mz50` — the zone's own midpoint — toward the zone:
+down through it from a high (SHORT), up from a low (LONG). Target is `mz100`,
+the far boundary, and the stop mirrors that distance about the actual fill, so
+reward and risk are 1:1 against the price really paid. `e50` sits half as far
+from the anchor and is recorded on every version, never traded.
+
+`place_orders: false` runs the same pass with the trading rule switched off, so
+the run draws the components and places nothing.
+
+Two variants (§9, §10) run over identical data, versions and signals:
+
+* `KEEP_OPEN` — the entry was a decision made on the information available, and
+  a later extreme does not revisit it. Exits are target, stop, or end of data.
+* `CLOSE_ON_CANDIDATE_UPDATE` — a strictly higher high (or lower low) on the
+  *originating* leg invalidates the setup, and the position leaves at the first
+  executable price afterwards.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ...core.context import Context
+from ...core.context import BarOpen, Context
 from ...core.strategy import Strategy
-from ...core.types import Bar
+from ...core.types import Bar, ExitReason, Side, Trade
 from ...utils.params import StrategyParams
 from ..registry import register
 from .crossing import DEFAULT_MAX_GAP_DAYS, Crossing, CrossingTracker
 from .margins import DEFAULT_INITIAL_RATIO, MARGIN_LOG, MarginLog, compute_zones, load_spec
-from .zones import zone_spans
+from .zones import MZ50, SIGNAL_LEVELS, STRICT_EXTENSION, zone_spans
+
+KEEP_OPEN = "KEEP_OPEN"
+CLOSE_ON_CANDIDATE_UPDATE = "CLOSE_ON_CANDIDATE_UPDATE"
+VARIANTS = (KEEP_OPEN, CLOSE_ON_CANDIDATE_UPDATE)
 
 
 @dataclass
@@ -36,7 +57,7 @@ class MZ50Params(StrategyParams):
     deviation_pct: float = 2.0        # retracement confirming a ZigZag pivot, % of price
     deviation_pips: float = 0.0       # the same threshold in pips; takes priority
 
-    # --------------------------------------------------------- the observations
+    # ------------------------------------------------------- the observations
     rollover_hour: int = 0
     rollover_tz: str = "UTC"
     max_gap_days: int = DEFAULT_MAX_GAP_DAYS
@@ -44,13 +65,15 @@ class MZ50Params(StrategyParams):
 
     # ------------------------------------------------------------ the trading
     place_orders: bool = False        # false = draw the components, trade nothing
+    signal_level: str = MZ50          # the level a crossing is measured against
+    variant: str = KEEP_OPEN
 
 
 @register
 class MZ50Strategy(Strategy):
     name = "mz50"
     params_class = MZ50Params
-    description = "Margin zones on the ZigZag candidate: zone versions and E50 crossings"
+    description = "Provisional-candidate Margin Zone: MZ50 crossing to MZ100, 1:1"
 
     # ------------------------------------------------------------- lifecycle
 
@@ -58,6 +81,12 @@ class MZ50Strategy(Strategy):
         p = self.p
         if p.volume <= 0:
             raise ValueError("volume must be > 0")
+        if p.variant not in VARIANTS:
+            raise ValueError(f"variant must be one of {list(VARIANTS)}, got {p.variant!r}")
+        if p.signal_level not in SIGNAL_LEVELS:
+            raise ValueError(
+                f"signal_level must be one of {list(SIGNAL_LEVELS)}, got {p.signal_level!r}"
+            )
 
         self._spec = load_spec(p.contract, p.contracts_dir or None)
         errors = [t for t in self._spec.problems() if t.startswith("ERROR")]
@@ -83,10 +112,21 @@ class MZ50Strategy(Strategy):
             rollover_hour=p.rollover_hour,
             rollover_tz=p.rollover_tz,
             max_gap_days=p.max_gap_days,
+            level=p.signal_level,
         )
         self._fed = 0
         self._symbol, self._timeframe = ctx.symbol, ctx.timeframe
         self._bars: list[Bar] = []
+
+        self._open_signal: Crossing | None = None   # the live trade's origin
+        self._pending: Crossing | None = None       # ordered, not yet filled
+        self._exit_due = False                      # variant B, next open
+        self._forced = False                        # this exit was an update
+        self._used_zones: set[int] = set()          # §8: one trade per version
+        self._signal_rows: list[dict] = []
+        self._trade_rows: list[dict] = []
+        self._updates_while_open = 0
+        self._first_update = None
 
     def _zones_for(self, candidate):
         """Margin as it stood on the candidate's own date."""
@@ -97,20 +137,165 @@ class MZ50Strategy(Strategy):
 
     # ------------------------------------------------------------ the bar loop
 
+    def on_bar_open(self, ctx: Context, event: BarOpen) -> None:
+        """Settle last bar's order, then run any scheduled exit.
+
+        Both belong here: the engine fills pending orders at this open *before*
+        this hook and walks the bar's range for stops and targets *after* it, so
+        correcting the bracket here makes it exact for the first bar the
+        position lives through — including one that opens and closes inside it.
+
+        §10's scheduled exit leaves at the first executable price. Closing in
+        `on_bar` would fill at the close of the very bar that made the update
+        known, which is not a price the strategy could have traded after
+        learning of it. This open is.
+        """
+        self._settle(ctx)
+        if self._exit_due and ctx.positions:
+            # The engine has no BREAK-type reason for this; the record names it
+            # `candidate_update` as §10 requires, and `_forced` carries that
+            # across to `on_trade`.
+            self._forced = True
+            ctx.close_all(ExitReason.STRATEGY)
+            self._exit_due = False
+
     def on_bar(self, ctx: Context, bar: Bar) -> None:
         index = len(ctx.history) - 1
         for pending in ctx.history[self._fed : index + 1]:
-            for crossing in self.tracker.push(pending):
-                self._act_on(ctx, crossing)
+            before = self.tracker.active
+            crossings = self.tracker.push(pending)
+            after = self.tracker.active
+
+            for crossing in crossings:
+                if crossing.index == index:
+                    self._act_on(ctx, crossing)
+
+            # A new version on this bar. If it strictly extends the leg the open
+            # trade came from, variant B schedules the exit (§10).
+            if after is not None and after is not before:
+                self._on_new_version(ctx, after)
         self._fed = index + 1
 
-    def _act_on(self, ctx: Context, crossing: Crossing) -> None:
-        """Where a trading rule turns a crossing into an order.
+    def _settle(self, ctx: Context) -> None:
+        """Reconcile the order placed last bar with what the broker did.
 
-        Does nothing while `place_orders` is false.
+        It either filled — and becomes the trade a candidate update is measured
+        against — or it was rejected, in which case holding on to it would block
+        every later signal.
         """
-        if not self.p.place_orders:
+        if self._pending is None:
             return
+        if ctx.positions:
+            # §7 measures the stop from the price actually paid, and invariant 7
+            # requires the two distances to match exactly. The order carried a
+            # stop measured from the signal bar's close, because an order placed
+            # without one leaves its first bar unprotected; now that the fill is
+            # known, re-measure so the bracket is truly symmetric.
+            position = ctx.positions[0]
+            stop = self._pending.stop_for(position.entry_price)
+            if abs(position.entry_price - self._pending.zone.mz100) > 0:
+                ctx.modify(position, sl=stop)
+            self._open_signal, self._pending = self._pending, None
+        elif ctx.is_flat:
+            self._pending = None
+
+    def _on_new_version(self, ctx: Context, version) -> None:
+        origin = self._open_signal
+        if origin is None or version.event_type != STRICT_EXTENSION:
+            return
+        if version.leg != origin.zone.leg:
+            return                       # a different leg is not this setup's update
+        self._updates_while_open += 1
+        if self._first_update is None:
+            self._first_update = (version.known_time, version.anchor_price)
+        if self.p.variant == CLOSE_ON_CANDIDATE_UPDATE:
+            self._exit_due = True
+
+    # -------------------------------------------------------------- the entry
+
+    def _act_on(self, ctx: Context, crossing: Crossing) -> None:
+        """Turn a True crossing into an order, or record why it was not taken."""
+        if not self.p.place_orders or not crossing.toward_zone:
+            return                       # §6: crossings back out are not signals
+        status = self._reject(ctx, crossing)
+        if status is None:
+            ctx.order(
+                Side.BUY if crossing.is_long else Side.SELL,
+                volume=self.p.volume,
+                sl=crossing.stop_for(ctx.bar.close),
+                tp=crossing.zone.mz100,
+                tag=tag_for(crossing),
+            )
+            self._pending = crossing
+            self._used_zones.add(crossing.zone.zone_id)
+            status = "entered"
+        self._signal_rows.append(crossing.as_signal_row(status))
+
+    def _reject(self, ctx: Context, crossing: Crossing) -> str | None:
+        """§6/§8's reasons a signal produces no trade. None means take it."""
+        if self._pending is not None or not ctx.is_flat:
+            return "ignored_open_trade"
+        if crossing.zone.zone_id in self._used_zones:
+            return "zone_already_traded"
+        # §6: no trade if price is already at or past the target. The fill is
+        # the next open and unknown here, so this bar's close stands in for it.
+        if crossing.zone.beyond(ctx.bar.close):
+            return "entry_beyond_target"
+        return None
+
+    def on_trade(self, ctx: Context, trade: Trade) -> None:
+        """§11 and §12: record the case, then require a fresh crossing."""
+        signal = self._open_signal or self._pending
+        if signal is None:
+            return
+        ambiguous = (
+            trade.sl is not None and trade.tp is not None and ctx.bar is not None
+            and ctx.bar.low <= min(trade.sl, trade.tp)
+            and ctx.bar.high >= max(trade.sl, trade.tp)
+        )
+        self._trade_rows.append({
+            "trade_id": trade.id,
+            "backtest_variant": self.p.variant,
+            "instrument": self._symbol,
+            "direction": "LONG" if signal.is_long else "SHORT",
+            "signal_level_name": signal.level_name,
+            "signal_level": signal.level,
+            "origin_zone_id": signal.zone.zone_id,
+            "origin_candidate_leg_id": signal.zone.leg,
+            "origin_candidate_version": signal.zone.version,
+            "origin_anchor_price": signal.zone.anchor_price,
+            "origin_anchor_time": signal.zone.anchor_time.isoformat(),
+            "signal_time": signal.time.isoformat(),
+            "entry_time": trade.entry_time.isoformat(),
+            "entry_price": trade.entry_price,
+            "initial_tp": trade.tp,
+            "initial_sl": trade.sl,
+            "initial_risk": trade.risk,
+            "exit_time": trade.exit_time.isoformat(),
+            "exit_price": trade.exit_price,
+            "exit_reason": (
+                "candidate_update"
+                if self._forced and trade.reason is ExitReason.STRATEGY
+                else trade.reason.value.lower()
+            ),
+            "pnl_currency": round(trade.net_pnl, 2),
+            "r_multiple": round(trade.r_multiple, 3) if trade.r_multiple is not None else "",
+            "mae": round(trade.mae, 6),
+            "mfe": round(trade.mfe, 6),
+            "bars_held": trade.bars_held,
+            "candidate_updates_while_open": self._updates_while_open,
+            "first_candidate_update_time": (
+                self._first_update[0].isoformat() if self._first_update else ""
+            ),
+            "first_candidate_update_price": self._first_update[1] if self._first_update else "",
+            "ambiguous_tp_sl": bool(ambiguous),
+        })
+        # §8: a fresh crossing is required after any exit.
+        self._open_signal = self._pending = None
+        self._exit_due = self._forced = False
+        self._updates_while_open = 0
+        self._first_update = None
+        self.tracker.reset_baseline()
 
     # ---------------------------------------------------------------- records
 
@@ -121,12 +306,18 @@ class MZ50Strategy(Strategy):
         ctx.log(
             f"mz50: {len(z.versions)} zone versions on {len(z.pivots)} confirmed pivots, "
             f"{len(self.tracker.points)} rollover points, {len(self.tracker.crossings)} "
-            f"crossings ({true_count} True)"
+            f"{self.p.signal_level} crossings ({true_count} True)"
         )
         if z.uncovered:
             ctx.log(f"mz50: {len(z.uncovered)} candidate(s) had no margin reading and made no zone")
         if not self.p.place_orders:
             ctx.log("mz50: place_orders is false — support components only, no orders")
+            return
+        entered = sum(1 for r in self._signal_rows if r["status"] == "entered")
+        ctx.log(f"mz50[{self.p.variant}]: {len(self._signal_rows)} signals, {entered} entered")
+        for status in sorted({r["status"] for r in self._signal_rows} - {"entered"}):
+            n = sum(1 for r in self._signal_rows if r["status"] == status)
+            ctx.log(f"mz50: {n} signal(s) not traded — {status}")
 
     def artifacts(self) -> dict[str, list[dict]]:
         """The run's own record of what it saw, bar by bar."""
@@ -156,6 +347,10 @@ class MZ50Strategy(Strategy):
             ]
         if self.tracker.crossings:
             out["crossings"] = [c.as_row() for c in self.tracker.crossings]
+        if self._signal_rows:
+            out["signals"] = self._signal_rows
+        if self._trade_rows:
+            out["cases"] = self._trade_rows
         return out
 
     # ------------------------------------------------------------- the chart
@@ -184,9 +379,10 @@ class MZ50Strategy(Strategy):
             confirm_at=self._confirm_at(z.candidate),
             rollover=self.tracker.points,
             crossings=self.tracker.crossings,
+            signal_level=p.signal_level,
             trades=read_trades(run_dir, self._bars),
             backtest=read_metrics(run_dir),
-            strategy=self.name,
+            strategy=f"{self.name} [{p.variant}]" if p.place_orders else self.name,
         )
         return write_chart(run_dir, payload)
 
@@ -198,3 +394,8 @@ class MZ50Strategy(Strategy):
         if threshold is None:
             threshold = abs(candidate.price) * self.p.deviation_pct / 100.0
         return candidate.price - threshold if candidate.is_high else candidate.price + threshold
+
+
+def tag_for(crossing: Crossing) -> str:
+    """Joins a trade back to the exact zone version that created it."""
+    return f"mz50 z{crossing.zone.zone_id} {crossing.current.day}"

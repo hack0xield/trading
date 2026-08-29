@@ -1,11 +1,13 @@
-# Margin zones on the ZigZag candidate — one forward pass, no orders yet.
+# Provisional ZigZag candidate -> MZ50 crossing -> MZ100.
 #
 #   scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 #
-# The run records the ZigZag, the zone versions and the daily rollover
-# crossings exactly as they became knowable, and draws them. `place_orders`
-# turns the trading rule on; with it false the run is a drawing pass over the
-# support components.
+# Specification: impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md. The zone
+# hangs off the provisional ZigZag candidate, so it is knowable immediately;
+# every strict extension freezes a new version, and a crossing counts only when
+# both rollover observations were measured against the same one. Entry is a
+# True crossing of MZ50 toward the zone, target MZ100, stop mirrored about the
+# fill. `place_orders: false` runs the same pass with the trading rule off.
 
 strategy: mz50
 symbol: EURUSD
@@ -33,7 +35,15 @@ params:
                            # crossing is formed across it.
 
   # --- the trading -------------------------------------------------------
-  place_orders: false      # true hands crossings to the trading rule
+  place_orders: true       # false = draw the support components, trade nothing
+  signal_level: mz50       # the level a crossing is measured against. mz50 is
+                           # the zone's own midpoint, anchor +- (dFMZ+dIMZ)/2 —
+                           # the entry level the specification requires. e50,
+                           # half as far from the anchor, is recorded on every
+                           # zone version but is analysis only.
+  variant: KEEP_OPEN       # or CLOSE_ON_CANDIDATE_UPDATE. The only difference is
+                           # whether a later strict extension of the originating
+                           # candidate closes an open trade.
 
 execution:
   initial_balance: 100000
