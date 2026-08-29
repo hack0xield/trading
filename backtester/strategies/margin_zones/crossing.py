@@ -1,18 +1,13 @@
-"""True E50 crossings against a versioned provisional zone — §6 of the spec.
+"""Rollover crossings of a zone's E50 level.
 
-`impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md` §6. Two consecutive valid
-CFD rollover points, strictly either side of the signal level, both measured
-against the *same* immutable zone version.
+Two consecutive rollover observations sitting strictly either side of `e50`,
+both measured against the *same* immutable zone version. That last clause is
+the safeguard: the anchor moves, so without it a level sliding under a static
+price would register as a crossing price never made. When a new version appears
+the baseline is dropped.
 
-That last clause is the whole safeguard. The zone is anchored on a candidate
-that moves, so without it a level sliding under a static price would register
-as a crossing that price never made. When a new version appears the baseline is
-dropped: an observation classified under the old level is never compared with
-one classified under the new.
-
-Direction follows the zone. A crossing *toward* the Margin Zone is the signal —
-downward through the level from a high, upward from a low. The opposite
-crossing, back out toward the extremum, is ignored (§6).
+A crossing *toward* the zone — down through the level from a high, up from a
+low — is classified True; the crossing back out toward the anchor is False.
 """
 
 from __future__ import annotations
@@ -21,19 +16,18 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ...core.types import Bar
-from .provisional import ProvisionalZoneTracker, ZoneVersion
 from .rollover import RolloverPoint, RolloverTracker
+from .zones import ZoneTracker, ZoneVersion
 
-#: §6's continuity rule. `rollover_points` collapses a weekend into one skipped
-#: day, so consecutive output points routinely span 2-3 calendar days without a
-#: point being missing. Wider than this is a hole in the data, and no crossing
-#: may be formed across it.
+#: Continuity limit in calendar days. A weekend collapses into one skipped day,
+#: so consecutive points routinely span 2-3 days; wider than this is a hole in
+#: the data and no crossing may be formed across it.
 DEFAULT_MAX_GAP_DAYS = 3
 
 
 @dataclass(frozen=True, slots=True)
-class CrossingSignal:
-    """A confirmed crossing of the signal level, toward the zone."""
+class Crossing:
+    """A rollover pair that moved through `e50`, and which way."""
 
     zone: ZoneVersion
     previous: RolloverPoint
@@ -41,50 +35,54 @@ class CrossingSignal:
     index: int              # bar on which the pair completed
 
     @property
+    def toward_zone(self) -> bool:
+        """True crossing: the move went in the zone's own direction."""
+        moved_down = self.current.price < self.previous.price
+        return moved_down == (self.zone.direction < 0)
+
+    @property
+    def classification(self) -> str:
+        return "True" if self.toward_zone else "False"
+
+    @property
+    def direction(self) -> str:
+        return "down" if self.current.price < self.previous.price else "up"
+
+    @property
     def is_long(self) -> bool:
         return self.zone.direction > 0
 
     @property
-    def signal_time(self) -> datetime:
+    def time(self) -> datetime:
+        """When the pair completed — the second observation's instant."""
         return self.current.roll_time
 
-    @property
-    def signal_price(self) -> float:
-        """The observation that completed the crossing. Not the entry — §6 is
-        explicit that the entry is the first executable price afterwards."""
-        return self.current.price
-
-    def take_profit(self) -> float:
-        return self.zone.mz100
-
-    def stop_for(self, entry: float) -> float:
-        """§7: the stop mirrors the target distance about the price actually paid.
-
-        Measured from the fill rather than from the signal, so the ratio is 1:1
-        against what was really risked, whatever the open gapped to.
-        """
-        risk = abs(entry - self.zone.mz100)
-        return entry - risk if self.is_long else entry + risk
-
-    def as_row(self, status: str) -> dict:
+    def as_row(self) -> dict:
         return {
             "zone_id": self.zone.zone_id,
             "candidate_leg_id": self.zone.leg,
             "candidate_version": self.zone.version,
-            "direction": "LONG" if self.is_long else "SHORT",
-            "previous_observation_time": self.previous.roll_time.isoformat(),
-            "previous_observation_price": self.previous.price,
-            "current_observation_time": self.current.roll_time.isoformat(),
-            "current_observation_price": self.current.price,
-            "signal_time": self.signal_time.isoformat(),
+            "candidate_kind": self.zone.kind.upper(),
+            "candidate_price": self.zone.anchor_price,
+            "zone_known_time": self.zone.known_time.isoformat(),
+            "prev_day": self.previous.day.isoformat(),
+            "prev_price": self.previous.price,
+            "day": self.current.day.isoformat(),
+            "price": self.current.price,
+            "crossing_time": self.time.isoformat(),
             "e50": self.zone.e50,
             "mz100": self.zone.mz100,
-            "status": status,
+            "direction": self.direction,
+            "classification": self.classification,
         }
 
 
 class CrossingTracker:
-    """Bars in, crossing signals out. Never sees past the bar it is given."""
+    """Bars in, zone versions and crossings out. Never sees past the bar given.
+
+    Owns the ZigZag, the zones and the rollover stream, so everything a
+    margin-zone strategy observes comes from one forward pass.
+    """
 
     def __init__(
         self,
@@ -96,17 +94,14 @@ class CrossingTracker:
         rollover_tz: str = "UTC",
         max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
     ):
-        self.zones = ProvisionalZoneTracker(
-            zones_for, pip_size, deviation_pct, deviation_abs
-        )
-        self._rollover = RolloverTracker(rollover_hour, rollover_tz)
+        self.zones = ZoneTracker(zones_for, pip_size, deviation_pct, deviation_abs)
+        self.rollover = RolloverTracker(rollover_hour, rollover_tz)
         self._max_gap = max(0, int(max_gap_days))
         self._count = 0
         self._prev: RolloverPoint | None = None
         self._prev_zone_id: int | None = None
 
-        self.signals: list[CrossingSignal] = []
-        self.observations = 0
+        self.crossings: list[Crossing] = []
 
     @property
     def active(self) -> ZoneVersion | None:
@@ -114,26 +109,24 @@ class CrossingTracker:
 
     @property
     def points(self) -> list[RolloverPoint]:
-        return self._rollover.points
+        return self.rollover.points
 
-    def push(self, bar: Bar) -> list[CrossingSignal]:
-        """Feed the next closed bar, in §5.2's order.
+    def push(self, bar: Bar) -> list[Crossing]:
+        """Feed the next closed bar; return the crossings it completed.
 
         Crossings are read first, against the zone as it stood *before* this bar
-        was closed; only then does the bar update the ZigZag and possibly create
-        a new version. Reversing the two would let a bar mint a zone and signal
-        against it using its own already-past prices.
+        closed; only then does the bar update the ZigZag and possibly create a
+        new version.
         """
         index = self._count
         self._count += 1
 
-        fired: list[CrossingSignal] = []
-        for point in self._rollover.push(bar):
-            self.observations += 1
-            signal = self._pair(point, index)
-            if signal is not None:
-                self.signals.append(signal)
-                fired.append(signal)
+        fired: list[Crossing] = []
+        for point in self.rollover.push(bar):
+            crossing = self._pair(point, index)
+            if crossing is not None:
+                self.crossings.append(crossing)
+                fired.append(crossing)
             self._prev = point
             self._prev_zone_id = self.active.zone_id if self.active else None
 
@@ -141,32 +134,27 @@ class CrossingTracker:
         return fired
 
     def reset_baseline(self) -> None:
-        """Forget the previous observation (§8: required after any trade exit)."""
+        """Forget the previous observation, so no pair spans the reset."""
         self._prev = None
         self._prev_zone_id = None
 
-    def _pair(self, point: RolloverPoint, index: int) -> CrossingSignal | None:
+    def _pair(self, point: RolloverPoint, index: int) -> Crossing | None:
         zone = self.active
         if zone is None or self._prev is None:
             return None
-        # Both observations must belong to the same immutable version (§6).
+        # Both observations must belong to the same immutable version.
         if self._prev_zone_id != zone.zone_id:
             return None
         if (point.day - self._prev.day).days > self._max_gap:
             return None
-        # A zone cannot act before it existed (§5.1, invariant 2).
+        # A zone cannot act before it existed.
         if point.roll_time <= zone.known_time:
             return None
 
         before = self._prev.price - zone.e50
         after = point.price - zone.e50
-        # Strictly opposite sides; sitting exactly on the level is neutral (§6).
+        # Strictly opposite sides; sitting exactly on the level is neutral.
         if before * after >= 0:
             return None
 
-        moved_down = point.price < self._prev.price
-        toward_zone = zone.direction < 0
-        if moved_down != toward_zone:
-            return None                     # crossing back out, ignored (§6)
-
-        return CrossingSignal(zone=zone, previous=self._prev, current=point, index=index)
+        return Crossing(zone=zone, previous=self._prev, current=point, index=index)

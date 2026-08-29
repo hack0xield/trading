@@ -31,16 +31,16 @@
       <div class="seg" id="filter" role="group" aria-label="What to draw"></div>
     </div>
     <div class="ctl">
-      <span>Price scale</span>
-      <div class="seg" id="scale" role="group" aria-label="Price scale"></div>
-    </div>
-    <div class="ctl" id="levels-ctl" hidden>
-      <span>25% levels</span>
-      <div class="seg" id="levels" role="group" aria-label="Show 25% control zone levels"></div>
+      <span>Rollover</span>
+      <div class="seg" id="roll" role="group" aria-label="Show rollover points"></div>
     </div>
     <div class="ctl" id="trades-ctl" hidden>
       <span>Orders</span>
-      <div class="seg" id="trades" role="group" aria-label="Show trades"></div>
+      <div class="seg" id="trades" role="group" aria-label="Show orders"></div>
+    </div>
+    <div class="ctl">
+      <span>Price scale</span>
+      <div class="seg" id="scale" role="group" aria-label="Price scale"></div>
     </div>
     <div class="ctl"><span id="count"></span></div>
   </div>
@@ -49,7 +49,7 @@
     <div class="chart-row">
       <svg class="yaxis" id="yaxis" aria-hidden="true"></svg>
       <div class="scroller" id="scroller" tabindex="0" role="img"
-           aria-label="Price chart with ZigZag pivots and margin-zone envelopes">
+           aria-label="Price chart with ZigZag pivots and margin zones">
         <div class="track" id="track"><svg id="plot"></svg></div>
       </div>
     </div>
@@ -58,17 +58,45 @@
   </div>
 
   <details>
-    <summary>Table view — every pivot and its zone</summary>
+    <summary>Zone versions — every zone the run held, and when it held it</summary>
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            <th>#</th><th>Kind</th><th>Extreme at</th><th>Price</th>
-            <th>Confirmed</th><th>Lag</th><th>FMZ</th><th>IMZ</th>
-            <th>Pips</th><th>MM used</th><th>Reached</th>
+            <th>#</th><th>Kind</th><th>Leg.Ver</th><th>Anchor at</th><th>Anchor</th>
+            <th>Known at</th><th>0% MZ</th><th>50% Ext-MZ</th><th>100% MZ</th>
+            <th>Pips</th><th>MM used</th><th>Created by</th>
           </tr>
         </thead>
-        <tbody id="tbody"></tbody>
+        <tbody id="ztbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <details>
+    <summary>ZigZag pivots — every confirmed pivot and how late it was knowable</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Kind</th><th>Extreme at</th><th>Price</th><th>Confirmed</th><th>Lag</th></tr>
+        </thead>
+        <tbody id="ptbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <details id="crossingsSection">
+    <summary>Rollover crossings — every True/False crossing of the 50% Ext-MZ level</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Zone</th><th>Kind</th><th>Anchor</th>
+            <th>Prev rollover</th><th>This rollover</th>
+            <th>50% Ext-MZ</th><th>Direction</th><th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="ctbody"></tbody>
       </table>
     </div>
   </details>
@@ -81,26 +109,10 @@
           <tr>
             <th>#</th><th>Side</th><th>Entry</th><th>Price</th>
             <th>Exit</th><th>Price</th><th>Bars</th><th>Exit reason</th>
-            <th>Net P&amp;L</th><th>From extremum</th>
+            <th>Net P&amp;L</th><th>Setup</th>
           </tr>
         </thead>
         <tbody id="ttbody"></tbody>
-      </table>
-    </div>
-  </details>
-
-  <details id="crossingsSection">
-    <summary>Rollover crossing events — every True/False crossing of the 50% Ext-MZ level</summary>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th><th>Zone</th><th>Extreme at</th><th>Extreme price</th>
-            <th>Prev rollover</th><th>This rollover</th>
-            <th>50% Ext-MZ</th><th>Direction</th><th>Result</th>
-          </tr>
-        </thead>
-        <tbody id="ctbody"></tbody>
       </table>
     </div>
   </details>
@@ -113,11 +125,13 @@
 const DATA = /*__DATA__*/null;
 
 const PLOT_H = 460, XAXIS_H = 26, YAXIS_W = 74, PAD = 14;
-const LEVELS = (DATA.levels || []);
-const TRADES = (DATA.trades || []);
+const ZONES = DATA.zones || [];
+const TRADES = DATA.trades || [];
+const ROLL = DATA.rollover || [];
+const CROSS = DATA.crossings || [];
 const state = {
   px: 4, filter: "both", scale: "fit",
-  levels: LEVELS.length > 0,
+  roll: ROLL.length > 0,
   trades: TRADES.length > 0,
 };
 const N = DATA.close.length;
@@ -139,11 +153,10 @@ for (let i = 0; i < N; i++) {
   if (DATA.low[i] < gLo) gLo = DATA.low[i];
   if (DATA.high[i] > gHi) gHi = DATA.high[i];
 }
-for (const e of DATA.envelopes) {
-  gLo = Math.min(gLo, e.imz, e.fmz, e.e50); gHi = Math.max(gHi, e.imz, e.fmz, e.e50);
+for (const z of ZONES) {
+  gLo = Math.min(gLo, z.mz0, z.mz100, z.e50); gHi = Math.max(gHi, z.mz0, z.mz100, z.e50);
 }
-for (const r of DATA.rollover) { gLo = Math.min(gLo, r.p); gHi = Math.max(gHi, r.p); }
-for (const L of LEVELS) { gLo = Math.min(gLo, L.lo); gHi = Math.max(gHi, L.hi); }
+for (const r of ROLL) { gLo = Math.min(gLo, r.p); gHi = Math.max(gHi, r.p); }
 for (const t of TRADES) { gLo = Math.min(gLo, t.p0, t.p1); gHi = Math.max(gHi, t.p0, t.p1); }
 { const s = gHi - gLo; gLo -= s * 0.03; gHi += s * 0.03; }
 
@@ -151,10 +164,8 @@ const view = { i0: 0, i1: 0, lo: gLo, hi: gHi, left: 0, w: 0 };
 const y = (p) => PAD + (view.hi - p) / (view.hi - view.lo) * (PLOT_H - 2 * PAD);
 const x = (i) => i * state.px - view.left + state.px / 2;
 
-// Rollover points come from a finer timeframe than the main series, so they
-// need an x position by timestamp rather than by index. Binary search for
-// the bracketing bars and interpolate between their (already index-spaced)
-// x positions — the same weekend/gap compression the rest of the chart uses.
+// Rollover points sit at a break instant, often between bars or inside a
+// weekend gap, so they need an x position by timestamp rather than by index.
 function xAt(t) {
   if (t <= DATA.times[0]) return x(0);
   if (t >= DATA.times[N - 1]) return x(N - 1);
@@ -168,7 +179,7 @@ function xAt(t) {
   return x(lo) + (x(hi) - x(lo)) * frac;
 }
 
-const drawEnv = () => state.filter === "both" || state.filter === "zones";
+const drawZones = () => state.filter === "both" || state.filter === "zones";
 const drawZig = () => state.filter === "both" || state.filter === "pivots";
 
 function measure() {
@@ -186,25 +197,16 @@ function measure() {
   }
   // A zone that projects off-screen is the interesting case, so the scale has
   // to make room for it rather than clip it away.
-  if (drawEnv()) {
-    for (const e of DATA.envelopes) {
-      if (e.i1 < view.i0 || e.i0 > view.i1) continue;
-      lo = Math.min(lo, e.fmz, e.imz, e.e50); hi = Math.max(hi, e.fmz, e.imz, e.e50);
+  if (drawZones()) {
+    for (const z of ZONES) {
+      if (z.i1 < view.i0 || z.i0 > view.i1) continue;
+      lo = Math.min(lo, z.mz0, z.mz100, z.e50); hi = Math.max(hi, z.mz0, z.mz100, z.e50);
     }
   }
-  // A trade whose stop sat off-screen still has to be visible, or the marker
-  // lands on the edge of the plot and reads as something it is not.
   if (state.trades) {
     for (const t of TRADES) {
       if (t.i1 < view.i0 || t.i0 > view.i1) continue;
       lo = Math.min(lo, t.p0, t.p1); hi = Math.max(hi, t.p0, t.p1);
-    }
-  }
-  if (state.levels) {
-    for (const L of LEVELS) {
-      const end = L.iA === null ? N - 1 : L.iA;
-      if (end < view.i0 || L.iE > view.i1) continue;
-      lo = Math.min(lo, L.lo); hi = Math.max(hi, L.hi);
     }
   }
   if (!isFinite(lo)) { lo = gLo; hi = gHi; }
@@ -222,12 +224,11 @@ function ticks(min, max, n) {
 }
 
 // ---- header -----------------------------------------------------------
-// A backtest and an analysis run draw the same layers, so the heading is the
-// only thing that says which this is.
+const trueCount = CROSS.filter((c) => c.cls === "True").length;
 $("title").textContent = DATA.strategy
-  ? `${DATA.symbol} ${DATA.timeframe} — ${DATA.strategy} backtest, ` +
-    `${TRADES.length} orders over ${DATA.pivots.length} margin zones`
-  : `${DATA.symbol} ${DATA.timeframe} — margin zones from ${DATA.pivots.length} swing pivots`;
+  ? `${DATA.symbol} ${DATA.timeframe} — ${DATA.strategy}, ` +
+    `${ZONES.length} zone versions and ${TRADES.length} orders`
+  : `${DATA.symbol} ${DATA.timeframe} — ${ZONES.length} margin zone versions`;
 $("subtitle").innerHTML = "";
 $("subtitle").append(
   `${day(DATA.times[0])} to ${day(DATA.times[N - 1])} · `,
@@ -261,8 +262,6 @@ function panel(cls, label, value, tone) {
   box.append(a, b); $("stats").append(box);
 }
 
-// On a backtest the headline is the result, not the zone count; on an
-// analysis run there is no result and the layout is unchanged.
 if (BT) {
   panel("hero", "Net profit", money(BT.net_profit || 0),
         (BT.net_profit || 0) >= 0 ? "up" : "down");
@@ -271,62 +270,51 @@ if (BT) {
     ["Orders", `${BT.trades || 0}  (${BT.wins || 0}W / ${BT.losses || 0}L)`],
     ["Win rate", (BT.win_rate_pct || 0).toFixed(1) + "%"],
     ["Profit factor", (BT.profit_factor || 0).toFixed(2)],
-    ["Payoff", (BT.payoff_ratio || 0).toFixed(2) + " : 1"],
     ["Max drawdown", (BT.max_drawdown_pct || 0).toFixed(2) + "%"],
   ]) panel("tile", label, value);
-  panel("tile", "Zones drawn", String(DATA.envelopes.length));
+  panel("tile", "Zone versions", String(ZONES.length));
 } else {
-  panel("hero", "Zones drawn", String(DATA.envelopes.length));
+  panel("hero", "Zone versions", String(ZONES.length));
 }
 for (const [label, value] of [
-  ["Pivots", String(DATA.pivots.length)],
+  ["Confirmed pivots", String(DATA.pivots.length)],
   ["Median swing", DATA.medianSwing.toFixed(2) + "%"],
   ["Avg FMZ", (st.avg_fmz_pips || 0).toFixed(0) + " pips = " + DATA.fmzPct.toFixed(2) + "%"],
   ["Margin readings", String(st.distinct_margins || 0)],
-  ["Reached FMZ", (st.reached_fmz_pct || 0).toFixed(0) + "%"],
-  ...(LEVELS.length ? [[
-    "Senior extremums",
-    `${LEVELS.length}  (${LEVELS.filter((L) => L.iA !== null).length} approached)`,
-  ]] : []),
+  ["Rollover points", String(ROLL.length)],
+  ["Crossings", `${CROSS.length}  (${trueCount} True / ${CROSS.length - trueCount} False)`],
 ]) panel("tile", label, value);
 
-// "Reached FMZ" is largely determined by the ZigZag threshold, not by the
-// zones — a leg travels at least `deviation` by construction, so once
-// deviation exceeds the FMZ distance the zone is crossed automatically. Say so
-// next to the number rather than letting it read as evidence.
+// A zone version lives only until the candidate extends again, so "reached"
+// here is measured over that window and not over the whole leg.
 $("statnote").textContent =
-  `Median swing ${DATA.medianSwing.toFixed(2)}% vs FMZ ${DATA.fmzPct.toFixed(2)}%. ` +
-  `"Reached FMZ" mostly reflects that ratio — a ZigZag leg moves at least the ` +
-  `deviation by construction — so it measures the threshold, not whether the ` +
-  `zone predicts anything. Testing that needs a comparison against arbitrary ` +
-  `levels the same distance away.`;
+  `Each zone is anchored on the ZigZag candidate as it stood at the time, and is ` +
+  `superseded the moment the candidate extends. Reached 0% MZ while active: ` +
+  `${(st.reached_mz0_pct || 0).toFixed(0)}%, 100% MZ: ${(st.reached_mz100_pct || 0).toFixed(0)}%. ` +
+  `Median swing ${DATA.medianSwing.toFixed(2)}% vs FMZ ${DATA.fmzPct.toFixed(2)}%.`;
 
 // ---- legend -----------------------------------------------------------
 for (const [color, glyph, text] of [
   ["var(--price)", "", `${DATA.symbol} price (${DATA.timeframe} close)`],
-  ["var(--text-primary)", "", "ZigZag — confirmed swing pivots"],
-  ["var(--win)", "●", "Low pivot — zone above it: 0% MZ = FMZ, 100% MZ = IMZ"],
-  ["var(--loss)", "●", "High pivot — zone below it, same boundaries"],
+  ["var(--text-primary)", "", "ZigZag — confirmed swing pivots, drawn at the extreme they name"],
+  ["var(--win)", "●", "Low candidate — zone above it: 0% MZ, 100% MZ"],
+  ["var(--loss)", "●", "High candidate — zone below it, same boundaries"],
+  ["var(--muted)", "", "Dotted staircase = the anchor, i.e. the candidate as it moved"],
   ["var(--muted)", "", "Dashed hairline inside a zone = 50% MZ, its midpoint"],
-  ["var(--muted)", "", "Solid hairline nearer the extremum = 50% Extremum-to-50% MZ level"],
-  ...(DATA.rollover.length ? [["var(--text-primary)", "●",
+  ["var(--muted)", "", "Solid hairline nearer the anchor = 50% Extremum-to-50% MZ level"],
+  ...(ROLL.length ? [["var(--text-primary)", "●",
     "Daily CFD rollover point — last price before the scheduled trading break"]] : []),
-  ...(DATA.crossings.length ? [
+  ...(CROSS.length ? [
     ["var(--win)", "◎", "True crossing — rollover moved through the 50% Ext-MZ level toward the zone"],
     ["var(--loss)", "◎", "False crossing — rollover moved through it away from the zone"],
-  ] : []),
-  ...(LEVELS.length ? [
-    ["var(--level)", "◆", "Senior H4 extremum — dominates the nearest same-type pivot each side"],
-    ["var(--level)", "▭", "Its 25% Control Zone level, with the approach corridor around it"],
-    ["var(--level)", "○", "First approach — the event the strategy trades"],
   ] : []),
   ...(TRADES.length ? [
     ["var(--trade-win)", "▲", "Winning order — entry ● to exit ▲"],
     ["var(--trade-loss)", "▼", "Losing order — entry ● to exit ▼"],
   ] : []),
-  ...(DATA.prov ? [["var(--muted)", "○",
-    `Unconfirmed ${DATA.prov.kind} ${px_(DATA.prov.p)} (${DATA.prov.bars} bars ago) — ` +
-    `needs ${px_(DATA.prov.confirmAt)} to become a pivot; no zone is drawn from it`]] : []),
+  ...(DATA.cand ? [["var(--muted)", "○",
+    `Live ${DATA.cand.kind} candidate ${px_(DATA.cand.p)} (${DATA.cand.bars} bars ago)` +
+    (DATA.cand.confirmAt === null ? "" : ` — needs ${px_(DATA.cand.confirmAt)} to confirm`)]] : []),
 ]) {
   const item = document.createElement("div"); item.className = "item";
   const sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = color;
@@ -340,7 +328,6 @@ for (const [color, glyph, text] of [
   item.append(lab); $("legend").append(item);
 }
 
-if (LEVELS.length) $("levels-ctl").hidden = false;
 if (TRADES.length) $("trades-ctl").hidden = false;
 
 // ---- controls ---------------------------------------------------------
@@ -364,12 +351,10 @@ function controls() {
   seg($("filter"),
       [["both", "Both"], ["zones", "Zones"], ["pivots", "ZigZag"], ["none", "None"]],
       state.filter, (v) => { state.filter = v; draw(); });
+  seg($("roll"), [[true, "Show"], [false, "Hide"]], state.roll,
+      (v) => { state.roll = v; draw(); });
   seg($("scale"), [["fit", "Fit visible"], ["full", "Full range"]],
       state.scale, (v) => { state.scale = v; draw(); });
-  if (LEVELS.length) {
-    seg($("levels"), [[true, "Show"], [false, "Hide"]], state.levels,
-        (v) => { state.levels = v; draw(); });
-  }
   if (TRADES.length) {
     seg($("trades"), [[true, "Show"], [false, "Hide"]], state.trades,
         (v) => { state.trades = v; draw(); });
@@ -409,36 +394,38 @@ function draw() {
   ya.append(el("line", { x1: YAXIS_W - 1, y1: 0, x2: YAXIS_W - 1, y2: PLOT_H,
                          stroke: "var(--axis)", "stroke-width": 1 }));
 
-  // Envelopes go down first, so price and the ZigZag spine read on top of them.
+  // Zones go down first, so price and the ZigZag spine read on top of them.
+  // Each version covers the bars over which it was the active zone, so the
+  // boundaries form a staircase that steps every time the candidate extended.
   let drawn = 0;
-  if (drawEnv()) {
-    for (const e of DATA.envelopes) {
-      if (e.i1 < a || e.i0 > b) continue;
+  if (drawZones()) {
+    for (const z of ZONES) {
+      if (z.i1 < a || z.i0 > b) continue;
       drawn++;
-      const c = e.dir > 0 ? "var(--win)" : "var(--loss)";
-      const x0 = x(e.i0), x1 = x(e.i1);
-      const yF = y(e.fmz), yI = y(e.imz);
+      const c = z.dir > 0 ? "var(--win)" : "var(--loss)";
+      const x0 = x(z.i0), x1 = x(z.i1 + 1);
+      const y0 = y(z.mz0), y1 = y(z.mz100);
       plot.append(el("rect", {
-        x: Math.min(x0, x1), y: Math.min(yF, yI), width: Math.max(1, Math.abs(x1 - x0)),
-        height: Math.max(1, Math.abs(yI - yF)), fill: c, "fill-opacity": 0.14,
+        x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.max(1, Math.abs(x1 - x0)),
+        height: Math.max(1, Math.abs(y1 - y0)), fill: c, "fill-opacity": 0.14,
       }));
-      // The near edge (0% MZ) is the one price meets first, so it gets the
-      // solid rule; the far edge is 100% MZ; the hairline between them is the
-      // 50% level, exactly halfway by definition.
-      plot.append(el("line", { x1: x0, y1: yF, x2: x1, y2: yF,
+      // Near boundary solid, far boundary faint, midpoint dashed between them.
+      plot.append(el("line", { x1: x0, y1: y0, x2: x1, y2: y0,
                                stroke: c, "stroke-width": 1.5, "stroke-opacity": 0.95 }));
-      plot.append(el("line", { x1: x0, y1: yI, x2: x1, y2: yI,
+      plot.append(el("line", { x1: x0, y1: y1, x2: x1, y2: y1,
                                stroke: c, "stroke-width": 1, "stroke-opacity": 0.6 }));
-      plot.append(el("line", { x1: x0, y1: (yF + yI) / 2, x2: x1, y2: (yF + yI) / 2,
+      plot.append(el("line", { x1: x0, y1: (y0 + y1) / 2, x2: x1, y2: (y0 + y1) / 2,
                                stroke: c, "stroke-width": 1, "stroke-opacity": 0.45,
                                "stroke-dasharray": "3 3" }));
-      // 50% Extremum-to-50% MZ level (§3.5): halfway between the pivot and
-      // the 50% MZ midpoint above, so it sits *outside* the shaded rect, on
-      // the near side toward the extremum — solid, like FMZ/IMZ, so it does
-      // not get lost the way a fine dotted line did.
-      const yE = y(e.e50);
+      // The signal level sits outside the band, between it and the anchor.
+      const yE = y(z.e50);
       plot.append(el("line", { x1: x0, y1: yE, x2: x1, y2: yE,
                                stroke: c, "stroke-width": 1, "stroke-opacity": 0.5 }));
+      // The anchor itself: the candidate price this version was built on.
+      const yA = y(z.anch);
+      plot.append(el("line", { x1: x0, y1: yA, x2: x1, y2: yA,
+                               stroke: c, "stroke-width": 1, "stroke-opacity": 0.7,
+                               "stroke-dasharray": "1 2" }));
     }
   }
 
@@ -451,58 +438,24 @@ function draw() {
   plot.append(el("path", { d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
                            "stroke-linejoin": "round", "stroke-linecap": "round" }));
 
-  // Daily CFD rollover points (§5): a standalone marker, not a level — small
-  // and subordinate to price and the ZigZag spine drawn after it.
+  // Daily CFD rollover points: an observation, subordinate to price.
   const tA = DATA.times[a], tB = DATA.times[b];
-  for (const r of DATA.rollover) {
-    if (r.t < tA || r.t > tB) continue;
-    plot.append(el("circle", {
-      cx: xAt(r.t), cy: y(r.p), r: 2.5,
-      fill: "var(--text-primary)", "fill-opacity": 0.55,
-    }));
-  }
-
-  // The 25% Control Zone levels (§9). These belong to the strategy, not to
-  // the zone analysis, so they take a colour of their own rather than
-  // borrowing the direction blue/red the envelopes already use.
-  if (state.levels) {
-    for (const L of LEVELS) {
-      const end = L.iA === null ? N - 1 : L.iA;
-      if (end < a || L.iE > b) continue;
-      const xs = x(Math.max(L.iE, a - 1)), xe = x(Math.min(end, b + 1));
-      const yTop = y(L.hi), yBot = y(L.lo);
-      // The corridor is 2.5% of FMZ, routinely sub-pixel: floor its height so
-      // it never disappears at Far zoom.
-      plot.append(el("rect", {
-        x: xs, y: yTop, width: Math.max(1, xe - xs), height: Math.max(1.5, yBot - yTop),
-        fill: "var(--level)", "fill-opacity": 0.22,
+  if (state.roll) {
+    for (const r of ROLL) {
+      if (r.t < tA || r.t > tB) continue;
+      plot.append(el("circle", {
+        cx: xAt(r.t), cy: y(r.p), r: 2.5,
+        fill: "var(--text-primary)", "fill-opacity": 0.55,
       }));
-      plot.append(el("line", {
-        x1: xs, y1: y(L.lvl), x2: xe, y2: y(L.lvl), stroke: "var(--level)",
-        "stroke-width": 1, "stroke-dasharray": "4 3", "stroke-opacity": 0.85,
-      }));
-      const xE = x(L.iE), yE = y(L.pE), r = 4;
-      plot.append(el("path", {
-        d: `M${xE},${yE - r}L${xE + r},${yE}L${xE},${yE + r}L${xE - r},${yE}Z`,
-        fill: "var(--level)", stroke: "var(--surface-1)", "stroke-width": 1.5,
-      }));
-      if (L.iA !== null && L.iA >= a && L.iA <= b) {
-        plot.append(el("circle", {
-          cx: x(L.iA), cy: y(L.lvl), r: 4.5, fill: "none",
-          stroke: "var(--level)", "stroke-width": 2,
-        }));
-      }
     }
   }
 
-  // Orders. Blue and red already mean zone direction on this chart, so trades
-  // get their own pair — and the marker shape says win/loss a second time, so
-  // colour is never the only channel carrying it.
-  let tradesDrawn = 0;
+  // Orders. Blue and red already mean zone direction, so trades get their own
+  // pair — and the marker shape says win/loss a second time, so colour is
+  // never the only channel carrying it.
   if (state.trades) {
     for (const t of TRADES) {
       if (t.i1 < a || t.i0 > b) continue;
-      tradesDrawn++;
       const c = t.pnl > 0 ? "var(--trade-win)" : "var(--trade-loss)";
       const x0 = x(t.i0), x1 = x(t.i1), y0 = y(t.p0), y1 = y(t.p1);
       plot.append(el("line", {
@@ -521,27 +474,26 @@ function draw() {
     }
   }
 
-  // Rollover crossing events (§5.5): a ring around the second rollover point
-  // in the pair, colour-coded True/False, on top of the plain dot above.
-  for (const c of DATA.crossings) {
-    if (c.t < tA || c.t > tB) continue;
-    const ring = el("circle", {
-      cx: xAt(c.t), cy: y(c.p), r: 5.5, fill: "none",
-      stroke: c.cls === "True" ? "var(--win)" : "var(--loss)", "stroke-width": 1.75,
-      // fill:none means only the stroke itself is hit-testable by default
-      // (pointer-events: visiblePainted) — a ~1.75px ring is nearly
-      // impossible to hover precisely, which is why the <title> below
-      // never seemed to fire. "all" makes the whole disc hoverable.
-      "pointer-events": "all",
-    });
-    ring.append(el("title", {}));
-    ring.lastChild.textContent =
-      `${c.cls} crossing (${c.dir}) — rollover ${dt(c.prevT)} ${px_(c.prevP)} -> ` +
-      `${c.day} ${px_(c.p)}, 50% Ext-MZ level ${px_(c.e50)}`;
-    plot.append(ring);
+  // Crossings: a ring around the second rollover point of the pair.
+  if (state.roll) {
+    for (const c of CROSS) {
+      if (c.t < tA || c.t > tB) continue;
+      const ring = el("circle", {
+        cx: xAt(c.t), cy: y(c.p), r: 5.5, fill: "none",
+        stroke: c.cls === "True" ? "var(--win)" : "var(--loss)", "stroke-width": 1.75,
+        // fill:none leaves only the stroke hit-testable, and a 1.75px ring is
+        // nearly impossible to hover; "all" makes the whole disc hoverable.
+        "pointer-events": "all",
+      });
+      ring.append(el("title", {}));
+      ring.lastChild.textContent =
+        `${c.cls} crossing (${c.dir}) — rollover ${dt(c.prevT)} ${px_(c.prevP)} -> ` +
+        `${c.day} ${px_(c.p)}, 50% Ext-MZ level ${px_(c.e50)} of zone ${c.z}`;
+      plot.append(ring);
+    }
   }
 
-  // ZigZag spine and its pivots.
+  // ZigZag spine and its pivots, plus the candidate still in progress.
   if (drawZig()) {
     const near = DATA.pivots.filter((p) => p.i >= a - 400 && p.i <= b + 400);
     if (near.length > 1) {
@@ -562,8 +514,8 @@ function draw() {
     }
 
     // The leg still in progress. Dashed and hollow because it is not a pivot:
-    // it can move further or be erased entirely, and no zone is drawn from it.
-    const pv = DATA.prov;
+    // it can extend further or be replaced.
+    const pv = DATA.cand;
     if (pv && DATA.pivots.length) {
       const lastP = DATA.pivots[DATA.pivots.length - 1];
       if (!(pv.i < a && lastP.i < a) && !(pv.i > b && lastP.i > b)) {
@@ -603,100 +555,76 @@ function draw() {
   plot.append(crosshair);
 
   $("count").textContent =
-    `${drawn} zone(s) on screen · ${DATA.envelopes.length} of ${DATA.pivots.length} pivots have margin data`;
-  buildTable();
-  buildCrossingsTable();
+    `${drawn} zone version(s) on screen of ${ZONES.length}`;
 }
 
-function buildTable() {
-  const tb = $("tbody");
+// ---- tables -----------------------------------------------------------
+function fill(tbody, rows) {
+  const tb = $(tbody);
   tb.innerHTML = "";
-  const byPivot = new Map(DATA.envelopes.map((e) => [e.pi, e]));
-  DATA.pivots.forEach((p, k) => {
-    const e = byPivot.get(k);
+  for (const cells of rows) {
     const tr = document.createElement("tr");
-    for (const [text, cls] of [
-      [String(k + 1), ""],
-      [p.kind, p.kind === "low" ? "up" : "down"],
-      [dt(p.t), ""],
-      [px_(p.p), ""],
-      [dt(DATA.times[p.ci]), ""],
-      [`+${p.ci - p.i} bars`, ""],
-      [e ? px_(e.fmz) : "—", ""],
-      [e ? px_(e.imz) : "—", ""],
-      [e ? e.pips.toFixed(0) : "—", ""],
-      [e ? e.mm.toLocaleString("en-US") : "—", ""],
-      [e ? (e.hit ? "yes" : "no") : "—", e && e.hit ? "up" : ""],
-    ]) {
+    for (const [text, cls] of cells) {
       const td = document.createElement("td");
       td.textContent = text;
       if (cls) td.className = cls;
       tr.append(td);
     }
     tb.append(tr);
-  });
+  }
 }
 
-function buildCrossingsTable() {
-  const section = $("crossingsSection");
-  section.style.display = DATA.crossings.length ? "" : "none";
-  if (!DATA.crossings.length) return;
+fill("ztbody", ZONES.map((z, k) => [
+  [String(k + 1), ""],
+  [z.kind, z.kind === "low" ? "up" : "down"],
+  [`${z.leg}.${z.ver}`, ""],
+  [dt(z.at), ""],
+  [px_(z.anch), ""],
+  [dt(z.kt), ""],
+  [px_(z.mz0), ""],
+  [px_(z.e50), ""],
+  [px_(z.mz100), ""],
+  [z.pips.toFixed(0), ""],
+  [z.mm.toLocaleString("en-US"), ""],
+  [z.ev.replace(/_/g, " "), ""],
+]));
 
-  const tb = $("ctbody");
-  tb.innerHTML = "";
-  DATA.crossings.forEach((c, k) => {
-    const p = DATA.pivots[c.pi];
-    const tr = document.createElement("tr");
-    for (const [text, cls] of [
-      [String(k + 1), ""],
-      [p.kind, p.kind === "low" ? "up" : "down"],
-      [dt(p.t), ""],
-      [px_(p.p), ""],
-      [`${c.prevDay}  ${px_(c.prevP)}`, ""],
-      [`${c.day}  ${px_(c.p)}`, ""],
-      [px_(c.e50), ""],
-      [c.dir, ""],
-      [c.cls, c.cls === "True" ? "up" : "down"],
-    ]) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      if (cls) td.className = cls;
-      tr.append(td);
-    }
-    tb.append(tr);
-  });
-}
+fill("ptbody", DATA.pivots.map((p, k) => [
+  [String(k + 1), ""],
+  [p.kind, p.kind === "low" ? "up" : "down"],
+  [dt(p.t), ""],
+  [px_(p.p), ""],
+  [dt(DATA.times[p.ci]), ""],
+  [`+${p.ci - p.i} bars`, ""],
+]));
 
-// ---- orders table -----------------------------------------------------
-// Only present on a backtest; an analysis run has no orders and the section
-// stays hidden rather than showing an empty table.
+$("crossingsSection").hidden = CROSS.length === 0;
+fill("ctbody", CROSS.map((c, k) => [
+  [String(k + 1), ""],
+  [String(c.z), ""],
+  [c.kind, c.kind === "low" ? "up" : "down"],
+  [px_(c.anch), ""],
+  [`${c.prevDay}  ${px_(c.prevP)}`, ""],
+  [`${c.day}  ${px_(c.p)}`, ""],
+  [px_(c.e50), ""],
+  [c.dir, ""],
+  [c.cls, c.cls === "True" ? "up" : "down"],
+]));
+
 if (TRADES.length) {
   $("tradesSection").hidden = false;
-  const tt = $("ttbody");
-  for (const o of TRADES) {
-    const tr = document.createElement("tr");
-    const won = o.pnl > 0;
-    for (const [text, cls] of [
-      [String(o.id), ""],
-      [o.side, o.side === "BUY" ? "up" : "down"],
-      [dt(o.t0), ""],
-      [px_(o.p0), ""],
-      [dt(o.t1), ""],
-      [px_(o.p1), ""],
-      [String(o.bars), ""],
-      [o.reason.replace(/_/g, " ").toLowerCase(), ""],
-      [(o.pnl >= 0 ? "+" : "") + o.pnl.toFixed(2), won ? "up" : "down"],
-      // The tag links a trade back to the senior extremum that produced it,
-      // so a row here can be found in events.csv without a synthetic id.
-      [(o.tag || "").replace(/^senior25 /, ""), ""],
-    ]) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      if (cls) td.className = cls;
-      tr.append(td);
-    }
-    tt.append(tr);
-  }
+  fill("ttbody", TRADES.map((o) => [
+    [String(o.id), ""],
+    [o.side, o.side === "BUY" ? "up" : "down"],
+    [dt(o.t0), ""],
+    [px_(o.p0), ""],
+    [dt(o.t1), ""],
+    [px_(o.p1), ""],
+    [String(o.bars), ""],
+    [o.reason.replace(/_/g, " ").toLowerCase(), ""],
+    [(o.pnl >= 0 ? "+" : "") + o.pnl.toFixed(2), o.pnl > 0 ? "up" : "down"],
+    [o.tag || "", ""],
+  ]));
 }
 
 let queued = false;
@@ -737,23 +665,21 @@ $("scroller").addEventListener("pointermove", (ev) => {
   tip.append(d);
   tip.append(row("var(--price)", px_(DATA.close[i]), "close"));
 
-  const here = DATA.envelopes.filter((e) => i >= e.i0 && i <= e.i1);
+  const here = ZONES.filter((z) => i >= z.i0 && i <= z.i1);
   if (here.length) {
     tip.append(document.createElement("hr"));
-    for (const e of here.slice(0, 2)) {
-      const c = e.dir > 0 ? "var(--win)" : "var(--loss)";
-      const p = DATA.pivots[e.pi];
-      tip.append(row(c, px_(p.p), `${p.kind} pivot, ${dt(p.t).slice(0, 10)}`));
-      tip.append(row(null, `${px_(e.fmz)} → ${px_(e.imz)}`, `FMZ→IMZ (${e.pips.toFixed(0)} pips)`));
-      tip.append(row(null, e.mm.toLocaleString("en-US"), `MM as of ${e.asOf}`));
+    for (const z of here.slice(0, 2)) {
+      const c = z.dir > 0 ? "var(--win)" : "var(--loss)";
+      tip.append(row(c, px_(z.anch), `${z.kind} candidate, zone ${z.id} (${z.leg}.${z.ver})`));
+      tip.append(row(null, `${px_(z.mz0)} → ${px_(z.mz100)}`, `0%→100% MZ (${z.pips.toFixed(0)} pips)`));
+      tip.append(row(null, px_(z.e50), "50% Ext-MZ level"));
+      tip.append(row(null, z.mm.toLocaleString("en-US"), `MM as of ${z.asOf}`));
     }
   }
 
-  // The hovered bar's own calendar day, not its exact timestamp — a
-  // crossing sits at a rollover time (often between bars, or off in the
-  // weekend gap via xAt()), so matching by day is what actually lines it
-  // up with the bar the mouse is over.
-  const cross = DATA.crossings.find((c) => c.day === day(DATA.times[i]));
+  // Match a crossing by calendar day: it sits at a rollover instant, often
+  // between bars, so the exact timestamp would rarely line up.
+  const cross = CROSS.find((c) => c.day === day(DATA.times[i]));
   if (cross) {
     tip.append(document.createElement("hr"));
     tip.append(row(
@@ -780,5 +706,6 @@ $("scroller").addEventListener("keydown", (ev) => {
 layout();
 draw();
 $("foot").textContent =
-  `${N.toLocaleString()} ${DATA.timeframe} bars · generated ${DATA.generated} by scripts/plot_zones.py`;
+  `${N.toLocaleString()} ${DATA.timeframe} bars · ${ZONES.length} zone versions · ` +
+  `generated ${DATA.generated}`;
 </script>

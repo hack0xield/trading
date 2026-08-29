@@ -20,13 +20,15 @@ scripts/run_backtest.py --config configs/strategies/day_open_xauusd.yaml
 backtester/
   core/         types, instrument specs, broker simulation, the run loop
   data/         bar storage: csv / parquet / sql behind one interface  (see data/README.md)
+  indicators/   strategy-agnostic indicators (ZigZag)
   strategies/   strategy implementations + the name registry
-  metrics/      performance statistics and report rendering
+  metrics/      performance statistics, the casebook, report rendering
   utils/        timeframes, time parsing, typed parameters
   cli.py        argument plumbing shared by the scripts
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
+signals/        scheduled Telegram heartbeats over the same code
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          122 tests, ~1s
+tests/          319 tests, ~2s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -49,83 +51,44 @@ series above it turns in 114 trades at a 51.8% win rate, a 1.00 profit factor
 and -$86 — which is -$1,056 of swap partly offset by a small directional edge.
 That is the null hypothesis behaving exactly as it should.
 
-## The senior-extremum strategy
+## The margin-zone strategy
 
-`impl-spec/H4 Senior Extremum 25% Control Zone Approach Pattern.pdf` as a run. A ZigZag
-high that dominates the nearest high on each side (`H-1 < H0 > H+1`) anchors a
-level a quarter of the way toward the margin zone's near boundary, and the
-first candle to come back within 10% of that distance is the signal.
+`impl-spec/MarginZones_revised.md` and
+`impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`, as one forward pass.
 
 ```bash
-scripts/run_backtest.py --config configs/strategies/senior25_eurusd.yaml --save
-```
-
-`--save` writes the run **and the margin-zones chart it was built on**, with
-the strategy drawn on top — the same picture `plot_zones.py` produces (ZigZag,
-`[FMZ, IMZ]` envelopes, 50% MZ, E50, rollover points, E50 crossings), plus:
-
-* each senior extremum as a diamond, in its own colour rather than the
-  direction blue/red the envelopes already use;
-* its 25% level and approach corridor, running forward to the bar that
-  approached it;
-* a ring on the approach event, and the orders that followed — entry ● to
-  exit ▲/▼, in a third colour pair.
-
-`25% levels` and `Orders` have their own Show/Hide buttons. The run directory
-holds the same files an analysis run does (`pivots.csv`, `envelopes.csv`,
-`rollover.csv`, `crossings.csv`) alongside `trades.csv` and the §8 `events.csv`.
-
-Nothing is recomputed for the chart: it draws the run's own ZigZag, its own
-envelopes and its own margin readings, so a backtest and its chart cannot
-disagree. Strategies that do not override `Strategy.chart` get the generic
-price-and-trades chart from `scripts/plot_run.py` instead, and `--no-chart`
-skips it.
-
-## The 50%-crossing strategy
-
-`impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`.
-
-```bash
-scripts/run_backtest.py --config configs/strategies/crossing50_eurusd.yaml --save
+scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 ```
 
 The Margin Zone hangs off the ZigZag **candidate** — the running extreme of the
 leg in progress — not off a confirmed pivot. The candidate is knowable from
-closed bars alone, so nothing reads the future; what it is not is *final*.
-Every strict extension of it freezes a new immutable zone version, and a
-crossing counts only when both rollover observations were measured against the
-same version. That is what stops a level sliding under a static price and
-registering as a crossing the price never made.
+closed bars alone, so nothing reads the future; what it is not is *final*. Every
+strict extension of it freezes a new immutable zone version with its own levels,
+its own `known_time` and its own crossing baseline, and a crossing counts only
+when both rollover observations were measured against the same version. That is
+what stops a level sliding under a static price and registering as a crossing
+price never made.
 
-Entry is a True crossing of `e50` toward the zone, target is `MZ100`, and the
-stop mirrors the target distance about the actual fill, so risk and reward are
-1:1 against the price really paid. Two variants differ in one behaviour only:
+`place_orders` is `false` by default, and the trading rule behind it is a stub:
+the run records and draws the components — the ZigZag, the zone versions, the
+daily CFD rollover points and their True/False crossings of `e50` — and places
+no orders.
 
-| | KEEP_OPEN | CLOSE_ON_CANDIDATE_UPDATE |
-|---|---:|---:|
-| entered trades | 78 | 79 |
-| candidate-update exits | 0 | **6** |
-| TP / SL | 36 / 42 | 36 / 37 |
-| win rate | 46.2% | 45.6% |
-| profit factor | 0.82 | 0.85 |
-| net P&L | -694 | -579 |
+`--save` writes the chart alongside `zones.csv`, `pivots.csv`, `rollover.csv`
+and `crossings.csv`. Every row in them was knowable at the timestamp it carries.
+A zone is drawn from the bar that made it knowable, not back to the extreme it
+names, so the picture and a live run see the same thing; the chart has Show/Hide
+controls for the ZigZag, the zones, the rollover layer and the orders.
 
-Entries before the first candidate-update exit are identical in both, which is
-the check §16 asks for — any other difference would be a bug rather than a
-finding.
+Strategies that do not override `Strategy.chart` get the generic
+price-and-trades chart from `scripts/plot_run.py` instead, and `--no-chart`
+skips it.
 
-**Two things worth knowing.** `e50` must sit closer to the anchor than the
-ZigZag threshold, or price confirms the pivot and flips the leg before it can
-reach the signal level: at a 2% deviation on EUR/USD the threshold is ~219 pips
-against ~101 to `e50` and 107 crossings form, while at 1% the two are ~110 and
-~101 and only 8 do. And the stop lands at `anchor + (dIMZ - dFMZ) / 2`, barely
-beyond the anchor, so an adverse extension usually takes the stop out before it
-can force an exit — which is why only 6 of 78 trades end that way.
-
-Where the specification says `MZ50` it defines the midpoint between the
-boundaries; this project keeps `e50`, the 50% Extremum-to-50% MZ level of the
-margin-zone specification, roughly half as far from the anchor. Same target,
-earlier signal. `mz50_midpoint` is recorded on every zone version regardless.
+**Worth knowing.** `e50` must sit closer to the anchor than the ZigZag
+threshold, or price confirms the pivot and flips the leg before it can reach the
+signal level. On EUR/USD H4 at a 2% deviation the threshold is ~220 pips against
+~102 to `e50`, and a 2022-2026 run produces 831 zone versions on 64 confirmed
+pivots, 1,205 rollover points and 177 crossings (108 True).
 
 ## The casebook
 

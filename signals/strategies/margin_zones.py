@@ -1,8 +1,8 @@
-"""Margin-zone state for a symbol: ZigZag pivots and the current [FMZ, IMZ] band.
+"""Margin-zone state for a symbol: the live ZigZag candidate and its zone.
 
-Reports where price sits relative to the zone projected from the most recent
-*confirmed* pivot. No condition is applied yet — this is the state a condition
-will eventually be written against.
+Reports where price sits relative to the Margin Zone anchored on the candidate,
+plus the most recent rollover point and crossing. No condition is applied — this
+is the state a condition will be written against.
 """
 
 from __future__ import annotations
@@ -10,17 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from backtester.indicators.zigzag import provisional, zigzag
-from backtester.strategies.margin_zones import (
-    build_envelopes,
-    build_payload,
-    report_name,
-    rollover_crossings,
-    rollover_points,
-    write_report,
-)
 from backtester.data.loader import load_bars
-from backtester.strategies.margin_zones import MarginLog, load_spec
+from backtester.strategies.margin_zones import (
+    CrossingTracker,
+    MarginLog,
+    build_payload,
+    load_spec,
+    report_name,
+    write_chart,
+    zone_spans,
+)
 from backtester.utils.params import StrategyParams
 
 from ..telegram import escape
@@ -34,62 +33,58 @@ class MarginZonesParams(StrategyParams):
     deviation_pct: float = 2.0                  # ZigZag reversal threshold
     margin_log: str = "data/margins/margins.csv"     # dated maintenance-margin readings
     initial_ratio: float = 1.1                  # IMZ = FMZ * this, when IM is unknown
-    rollover_timeframe: str = "M15"             # bars sampled for the pre-break price
     rollover_hour: int = 0                      # hour, in rollover_tz, the break starts
     rollover_tz: str = "UTC"                    # MT5 bars are broker time labelled UTC,
-                                                 # so "UTC" means broker midnight; the
-                                                 # terminal has no API for the real
-                                                 # schedule — see backtester/.../rollover.py
+                                                 # so "UTC" means broker midnight
+    max_gap_days: int = 3                       # widest gap a crossing may span
 
 
 @register
 class MarginZonesSignal(SignalStrategy):
     name = "margin_zones"
     params_class = MarginZonesParams
-    description = "ZigZag pivots and the [FMZ, IMZ] margin zone projected from the latest"
+    description = "The Margin Zone anchored on the live ZigZag candidate, and its crossings"
 
     def evaluate(self, job, config) -> dict:
         p = self.p
         bars = load_bars(job.symbol, job.timeframe, data=config.data, validate=False)
         spec = load_spec(p.contract)
         log = MarginLog(Path(p.margin_log))
+        code = p.contract.upper()
 
-        pivots = zigzag(bars, deviation_pct=p.deviation_pct)
-        envelopes = build_envelopes(bars, pivots, spec, log, p.initial_ratio, p.contract)
-        prov = provisional(bars, deviation_pct=p.deviation_pct, pivots=pivots)
+        def zones_for(candidate):
+            observation = log.latest(code, on=candidate.time.date())
+            if observation is None:
+                return None
+            from backtester.strategies.margin_zones import compute_zones
 
-        rollover = []
-        if p.rollover_timeframe == job.timeframe:
-            rollover = rollover_points(bars, p.rollover_hour, p.rollover_tz)
-        else:
-            # A finer timeframe is nice-to-have for the rollover sample, but
-            # not fetched for every symbol; a job must not fail its heartbeat
-            # over it, so this is the one soft-fail spot in evaluate().
-            try:
-                roll_bars = load_bars(job.symbol, p.rollover_timeframe, data=config.data,
-                                      validate=False)
-            except ValueError:
-                roll_bars = None
-            if roll_bars is not None:
-                rollover = rollover_points(roll_bars, p.rollover_hour, p.rollover_tz)
+            return compute_zones(spec, observation, p.initial_ratio)
 
-        # Crossings are checked against the zone timeframe's own bars (`bars`,
-        # not `roll_bars`), since `envelope_at` resolves a rollover time to an
-        # active zone via H4 bar-index boundaries.
-        crossings = rollover_crossings(rollover, envelopes, bars) if rollover else []
+        tracker = CrossingTracker(
+            zones_for=zones_for,
+            pip_size=spec.pip_size,
+            deviation_pct=p.deviation_pct,
+            rollover_hour=p.rollover_hour,
+            rollover_tz=p.rollover_tz,
+            max_gap_days=p.max_gap_days,
+        )
+        for bar in bars:
+            tracker.push(bar)
 
+        zones = tracker.zones
         facts = bar_facts(bars, job.timeframe)
         facts.update({
-            "pivots": len(pivots),
-            "zones": len(envelopes),
-            "margin_readings": len({e.maintenance for e in envelopes}),
+            "pivots": len(zones.pivots),
+            "zones": len(zones.versions),
+            "margin_readings": len({v.zones.maintenance for v in zones.versions}),
             "digits": max(2, len(str(spec.pip_size).split(".")[-1])),
-            "rollover_points": len(rollover),
+            "rollover_points": len(tracker.points),
+            "crossings": len(tracker.crossings),
         })
-        if pivots:
-            facts["last_pivot"] = pivots[-1]
-        if envelopes:
-            zone = envelopes[-1]
+        if zones.pivots:
+            facts["last_pivot"] = zones.pivots[-1]
+        zone = zones.active
+        if zone is not None:
             facts["last_zone"] = zone
             # Where price stands relative to the live zone — the quantity a
             # condition will key on once one exists.
@@ -99,41 +94,46 @@ class MarginZonesSignal(SignalStrategy):
                 else min(abs(facts["last_close"] - zone.lo), abs(facts["last_close"] - zone.hi))
                 / spec.pip_size
             )
-        if prov:
-            facts["provisional"] = prov
-        if rollover:
-            facts["last_rollover"] = rollover[-1]
-        facts["crossings"] = len(crossings)
-        # "Just happened": the most recent rollover point is itself the
-        # second half of a crossing pair, not merely that a crossing exists
-        # somewhere in the history. Fires on every run while it stays the
-        # latest point — there is no cross-run state to suppress a repeat
-        # once the next day's point arrives without one of its own.
-        if crossings and rollover and crossings[-1].current is rollover[-1]:
-            facts["latest_crossing"] = crossings[-1]
+        if zones.candidate is not None:
+            facts["candidate"] = zones.candidate
+        if tracker.points:
+            facts["last_rollover"] = tracker.points[-1]
+        # "Just happened": the newest rollover point is itself the second half
+        # of a crossing pair, not merely that a crossing exists in the history.
+        if tracker.crossings and tracker.points \
+                and tracker.crossings[-1].current is tracker.points[-1]:
+            facts["latest_crossing"] = tracker.crossings[-1]
 
         # Held for write_artifacts, so the report is rendered from the very
         # objects the message quoted rather than a second computation.
-        self._state = (bars, pivots, envelopes, prov, spec, rollover, crossings)
+        self._state = (bars, spec, tracker)
         return facts
 
     def write_artifacts(self, job, config, facts: dict):
         state = getattr(self, "_state", None)
         if state is None:
             return None
-        bars, pivots, envelopes, prov, spec, rollover, crossings = state
+        bars, spec, tracker = state
+        zones = tracker.zones
         deviation = f"{self.p.deviation_pct:g}%"
         payload = build_payload(
-            job.symbol, job.timeframe, bars, pivots, envelopes, prov, spec,
-            deviation, self.p.initial_ratio, rollover, crossings,
+            symbol=job.symbol,
+            timeframe=job.timeframe,
+            bars=bars,
+            pivots=zones.pivots,
+            spans=zone_spans(zones.versions, zones.superseded, len(bars) - 1),
+            spec=spec,
+            deviation=deviation,
+            initial_ratio=self.p.initial_ratio,
+            candidate=zones.candidate,
+            rollover=tracker.points,
+            crossings=tracker.crossings,
         )
         directory = Path("runs") / report_name(
             job.symbol, job.timeframe, spec.code, deviation
         )
-        return write_report(
-            directory, payload, bars, pivots, envelopes, spec, self.p.margin_log,
-            rollover=rollover, crossings=crossings,
-        )
+        write_chart(directory, payload)
+        return directory
 
     def compose(self, job, facts: dict) -> str:
         d = facts["digits"]
@@ -161,14 +161,20 @@ class MarginZonesSignal(SignalStrategy):
                 f"Last pivot {escape(pivot.kind)} {px(pivot.price)} "
                 f"on {pivot.time:%Y-%m-%d}, confirmed +{pivot.lag_bars} bars"
             )
+        candidate = facts.get("candidate")
+        if candidate:
+            lines.append(
+                f"Candidate  {escape(candidate.kind)} {px(candidate.price)} "
+                f"on {candidate.time:%Y-%m-%d} — the anchor the zone hangs off"
+            )
         zone = facts.get("last_zone")
         if zone:
             lines.append(
                 f"Zone       {px(zone.lo)} – {px(zone.hi)}  "
-                f"(FMZ {zone.fmz_pips:.0f} / IMZ {zone.imz_pips:.0f} pips, "
-                f"MM {zone.maintenance:,.0f} as of {zone.margin_as_of})"
+                f"(FMZ {zone.zones.fmz:.0f} / IMZ {zone.zones.imz:.0f} pips, "
+                f"MM {zone.zones.maintenance:,.0f} as of {zone.zones.as_of})"
             )
-            lines.append(f"50% Ext-MZ {px(zone.e50_price)}")
+            lines.append(f"50% Ext-MZ {px(zone.e50)}")
             lines.append(
                 "Price      <b>inside the zone</b>" if facts["in_zone"]
                 else f"Price      {facts['distance_to_zone']:.0f} pips from the zone"
@@ -184,15 +190,9 @@ class MarginZonesSignal(SignalStrategy):
         if crossing:
             lines.append(
                 f"🔔 <b>{crossing.classification} crossing</b> — rollover moved "
-                f"{crossing.direction} through the 50% Ext-MZ level ({px(crossing.e_level)}): "
+                f"{crossing.direction} through the 50% Ext-MZ level ({px(crossing.zone.e50)}): "
                 f"{crossing.previous.day} {px(crossing.previous.price)} → "
                 f"{crossing.current.day} {px(crossing.current.price)}"
-            )
-        prov = facts.get("provisional")
-        if prov:
-            lines.append(
-                f"In progress unconfirmed {escape(prov.kind)} {px(prov.price)}, "
-                f"needs {px(prov.confirm_at)} to confirm"
             )
 
         lines += ["", "<i>No condition is configured yet — this is a scheduled heartbeat "

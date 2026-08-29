@@ -167,8 +167,7 @@ class MarginZones:
     * **MZ**  — the **width** of the interval between them, `IMZ - FMZ`
 
     MZ is a width, never a distance from the extremum, and never a synonym for
-    FMZ. (This field was called `mr` while the earlier draft called the same
-    quantity a "margin range".)
+    FMZ.
     """
 
     code: str
@@ -189,9 +188,7 @@ class MarginZones:
 
         The percentage is a position *inside* the zone, not a fraction of the
         distance to it: 0% is the near boundary (FMZ), 100% the far one (IMZ),
-        50% the midpoint. So for the spec's example the 50% level is 243.6
-        pips from the extremum, not 116 and not 11.6 — the two readings the
-        earlier, looser wording could support.
+        50% the midpoint.
         """
         return self.fmz + self.mz * fraction
 

@@ -6,7 +6,7 @@
 // the page renders blank: no chart, no table, no error anyone sees without
 // opening a console. This runs it headlessly so the suite notices instead.
 //
-// Driven by tests/test_senior25.py::TestChartRenders; also usable by hand:
+// Driven by tests/test_mz50.py::TestChartRenders; also usable by hand:
 //   node tests/render_check.js runs/<dir>/chart.html
 const fs = require("fs"), vm = require("vm");
 const html = fs.readFileSync(process.argv[2], "utf8");
@@ -64,10 +64,11 @@ try {
   console.log(`  HTML elements created: ${created.html}`);
   console.log(`  title  : ${byId.title ? byId.title.textContent : "(not set)"}`);
   console.log(`  count  : ${byId.count ? byId.count.textContent : "(not set)"}`);
-  console.log(`  pattern elements drawn: ${created.level}`);
   console.log(`  order elements drawn  : ${created.trade}`);
   console.log(`  legend items: ${byId.legend ? byId.legend.children.length : 0}`);
-  console.log(`  table rows  : ${byId.tbody ? byId.tbody.children.length : (byId.rows ? byId.rows.children.length : "n/a")}`);
+  console.log(`  zone rows   : ${byId.ztbody ? byId.ztbody.children.length : "n/a"}`);
+  console.log(`  pivot rows  : ${byId.ptbody ? byId.ptbody.children.length : "n/a"}`);
+  console.log(`  crossing rows: ${byId.ctbody ? byId.ctbody.children.length : "n/a"}`);
 } catch (e) {
   console.log(`FAIL: ${e.name}: ${e.message}`);
   console.log((e.stack || "").split("\n").slice(0, 4).join("\n"));

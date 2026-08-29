@@ -1,21 +1,16 @@
 """Generic indicators — strategy-agnostic by construction.
 
-Anything here must be usable by a strategy that knows nothing about the
-others. That is the test for belonging: if a module needs a particular
-strategy's data model, it belongs in that strategy's package instead.
-
-`backtester/analysis/` used to hold ZigZag alongside margin-zone envelopes,
-which meant importing the indicator dragged in CME margin machinery — 23
-modules for a function that turns bars into pivots.
+Anything here must be usable by a strategy that knows nothing about the others.
+That is the test for belonging: a module needing a particular strategy's data
+model belongs in that strategy's package instead.
 """
 
-from .swings import SeniorPivot, is_senior, newest_senior, senior_pivots
 from .zigzag import (
-    Pivot, Provisional, ZigZagTracker, legs, pivots_known_by, provisional, swing_sizes, zigzag,
+    Candidate, Pivot, Provisional, ZigZagTracker, legs, pivots_known_by, provisional,
+    swing_sizes, zigzag,
 )
 
 __all__ = [
-    "Pivot", "Provisional", "SeniorPivot", "ZigZagTracker", "is_senior", "legs",
-    "newest_senior", "pivots_known_by", "provisional", "senior_pivots",
-    "swing_sizes", "zigzag",
+    "Candidate", "Pivot", "Provisional", "ZigZagTracker", "legs", "pivots_known_by",
+    "provisional", "swing_sizes", "zigzag",
 ]

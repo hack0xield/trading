@@ -1,4 +1,4 @@
-"""ZigZag pivots and margin-zone envelopes."""
+"""ZigZag pivots, the zones anchored on them, and the daily rollover stream."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from backtester.indicators.zigzag import (
     Pivot, legs, pivots_known_by, provisional, swing_sizes, zigzag,
 )
 from backtester.strategies.margin_zones import (
-    ContractSpec, Envelope, MarginLog, MarginObservation, RolloverPoint, build_envelopes,
-    envelope_at, margin_coverage, rollover_crossings, rollover_points, summarise,
+    ContractSpec, MarginLog, MarginObservation, RolloverTracker, ZoneTracker,
+    compute_zones, report_name, summarise, zone_spans,
 )
 
 UTC = timezone.utc
@@ -176,8 +176,9 @@ class TestProvisional:
         assert provisional([], deviation_abs=1) is None
 
 
-class TestEnvelopes:
-    """FMZ/IMZ bands projected from pivots, per step 5 of the note."""
+
+class TestZoneVersions:
+    """Zones anchored on the ZigZag candidate, versioned as it moves."""
 
     @pytest.fixture
     def log(self, tmp_path) -> MarginLog:
@@ -185,123 +186,113 @@ class TestEnvelopes:
         log.add(MarginObservation("6E", date(2023, 1, 1), 2900.0, source="t"))
         return log
 
-    def test_band_is_projected_up_from_a_low(self, log):
-        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
-        envelopes = build_envelopes(bars, pivots, spec_6e(), log)
-        low = [e for e in envelopes if not e.pivot.is_high][0]
+    def track(self, log, bars, deviation_abs=0.01) -> ZoneTracker:
+        spec = spec_6e()
+
+        def zones_for(candidate):
+            observation = log.latest("6E", on=candidate.time.date())
+            return None if observation is None else compute_zones(spec, observation, 1.1)
+
+        tracker = ZoneTracker(zones_for, spec.pip_size, None, deviation_abs)
+        for bar in bars:
+            tracker.push(bar)
+        return tracker
+
+    def test_a_low_anchors_its_zone_above(self, log):
+        bars = ramp([1.12, 1.11, 1.10, 1.11, 1.12])
+        low = [v for v in self.track(log, bars).versions if v.kind == "low"][0]
 
         assert low.direction == 1
-        # FMZ 232 pips, IMZ 255.2 pips, at 0.0001 per pip.
-        assert low.fmz_price == pytest.approx(low.pivot.price + 0.0232)
-        assert low.imz_price == pytest.approx(low.pivot.price + 0.02552)
-        assert low.width == pytest.approx(0.00232)
+        # MM=2900, PP=6.25, NP=2 -> FMZ 232 pips, IMZ 255.2 pips at 0.0001/pip.
+        assert low.mz0 == pytest.approx(low.anchor_price + 0.0232)
+        assert low.mz100 == pytest.approx(low.anchor_price + 0.02552)
 
-    def test_band_is_projected_down_from_a_high(self, log):
-        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
-        envelopes = build_envelopes(bars, pivots, spec_6e(), log)
-        high = [e for e in envelopes if e.pivot.is_high][0]
+    def test_a_high_anchors_its_zone_below(self, log):
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10])
+        high = [v for v in self.track(log, bars).versions if v.kind == "high"][0]
 
         assert high.direction == -1
-        assert high.fmz_price == pytest.approx(high.pivot.price - 0.0232)
-        assert high.imz_price < high.fmz_price
+        assert high.mz0 == pytest.approx(high.anchor_price - 0.0232)
+        assert high.mz100 < high.mz0
 
-    def test_each_envelope_runs_to_the_next_pivot(self, log):
+    def test_e50_matches_the_spec_worked_example(self, log):
+        # 50% MZ = 243.6 pips, E50 = 121.8 pips from the anchor.
+        bars = ramp([1.12, 1.11, 1.10, 1.11, 1.12])
+        low = [v for v in self.track(log, bars).versions if v.kind == "low"][0]
+        assert low.e50 == pytest.approx(low.anchor_price + 0.01218)
+
+    def test_e50_is_halfway_between_the_anchor_and_the_midpoint(self, log):
         bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
-        envelopes = build_envelopes(bars, pivots, spec_6e(), log)
-        for env, nxt in zip(envelopes, pivots[1:]):
-            assert env.end_index == nxt.index
-        assert envelopes[-1].end_index == len(bars) - 1
+        for version in self.track(log, bars).versions:
+            assert version.e50 == pytest.approx((version.anchor_price + version.mz50) / 2)
 
-    def test_margin_is_read_as_it_stood_at_the_pivot(self, tmp_path):
-        """A 2024 pivot must not be drawn with a 2025 margin."""
+    def test_e50_sits_outside_the_zone_nearer_the_anchor(self, log):
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10])
+        high = [v for v in self.track(log, bars).versions if v.kind == "high"][0]
+        assert high.anchor_price - high.e50 < high.anchor_price - high.mz0
+
+    def test_a_version_is_never_knowable_before_its_own_bar(self, log):
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
+        for version in self.track(log, bars).versions:
+            assert version.known_index >= version.anchor_index
+            assert version.known_time >= version.anchor_time
+
+    def test_margin_is_read_as_it_stood_at_the_anchor(self, tmp_path):
+        """A 2024 anchor must not be drawn with a 2025 margin."""
         log = MarginLog(tmp_path / "m.csv")
         log.add(MarginObservation("6E", date(2023, 1, 1), 2900.0, source="t"))
         log.add(MarginObservation("6E", date(2025, 1, 1), 5800.0, source="t"))
 
         bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])  # all in 2024
-        pivots = zigzag(bars, deviation_abs=0.01)
-        envelopes = build_envelopes(bars, pivots, spec_6e(), log)
+        versions = self.track(log, bars).versions
+        assert versions
+        assert {v.zones.maintenance for v in versions} == {2900.0}
+        assert all(v.zones.as_of == date(2023, 1, 1) for v in versions)
 
-        assert {e.maintenance for e in envelopes} == {2900.0}
-        assert all(e.margin_as_of == date(2023, 1, 1) for e in envelopes)
-
-    def test_a_margin_change_widens_later_envelopes(self, tmp_path):
-        log = MarginLog(tmp_path / "m.csv")
-        log.add(MarginObservation("6E", date(2023, 1, 1), 2900.0, source="t"))
+    def test_a_wider_margin_widens_the_zone(self, tmp_path):
         bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        narrow = build_envelopes(bars, zigzag(bars, deviation_abs=0.01), spec_6e(), log)
+        narrow = MarginLog(tmp_path / "narrow.csv")
+        narrow.add(MarginObservation("6E", date(2023, 1, 1), 2900.0, source="t"))
+        wide = MarginLog(tmp_path / "wide.csv")
+        wide.add(MarginObservation("6E", date(2023, 1, 1), 5800.0, source="t"))
 
-        log.add(MarginObservation("6E", date(2023, 6, 1), 5800.0, source="t"))
-        wide = build_envelopes(bars, zigzag(bars, deviation_abs=0.01), spec_6e(), log)
-        assert wide[0].fmz_pips == pytest.approx(2 * narrow[0].fmz_pips)
+        a = self.track(narrow, bars).versions[0]
+        b = self.track(wide, bars).versions[0]
+        assert b.zones.fmz == pytest.approx(2 * a.zones.fmz)
 
-    def test_pivots_before_any_reading_are_skipped(self, tmp_path):
+    def test_a_candidate_with_no_margin_reading_makes_no_zone(self, tmp_path):
         log = MarginLog(tmp_path / "m.csv")
         log.add(MarginObservation("6E", date(2099, 1, 1), 2900.0, source="t"))
         bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
+        tracker = self.track(log, bars)
+        assert tracker.versions == []
+        assert tracker.uncovered
 
-        assert build_envelopes(bars, pivots, spec_6e(), log) == []
-        covered, missing = margin_coverage(pivots, log, "6E")
-        assert covered == [] and len(missing) == len(pivots)
-
-    def test_touched_detects_price_reaching_the_band(self, log):
-        # Rise far enough past the low pivot to enter its 232-pip zone.
-        bars = ramp([1.10, 1.09, 1.08, 1.09, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.005)
-        envelopes = build_envelopes(bars, pivots, spec_6e(), log)
-        assert envelopes and envelopes[-1].touched(bars) in (True, False)
-
-    def test_summarise_reports_coverage(self, log):
+    def test_spans_run_from_known_to_superseded(self, log):
         bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        envelopes = build_envelopes(bars, zigzag(bars, deviation_abs=0.01), spec_6e(), log)
-        stats = summarise(envelopes, bars)
-        assert stats["envelopes"] == len(envelopes)
+        tracker = self.track(log, bars)
+        spans = zone_spans(tracker.versions, tracker.superseded, len(bars) - 1)
+
+        assert [s[1] for s in spans] == [v.known_index for v in tracker.versions]
+        for (_, _, end), (nxt, start, _) in zip(spans, spans[1:]):
+            assert end == start - 1
+        assert spans[-1][2] == len(bars) - 1
+
+    def test_summarise_counts_zones_reached_while_active(self, log):
+        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
+        tracker = self.track(log, bars)
+        spans = zone_spans(tracker.versions, tracker.superseded, len(bars) - 1)
+        stats = summarise(spans, bars)
+        assert stats["zones"] == len(spans)
         assert stats["distinct_margins"] == 1
         assert stats["avg_fmz_pips"] == pytest.approx(232.0)
 
     def test_summarise_on_nothing(self):
-        assert summarise([], []) == {"envelopes": 0}
+        assert summarise([], []) == {"zones": 0}
 
 
-class TestE50Level:
-    """Revised spec §3.5: halfway between the pivot and the 50% MZ midpoint."""
-
-    @pytest.fixture
-    def log(self, tmp_path) -> MarginLog:
-        log = MarginLog(tmp_path / "m.csv")
-        log.add(MarginObservation("6E", date(2023, 1, 1), 2900.0, source="t"))
-        return log
-
-    def test_matches_the_spec_worked_example(self, log):
-        # MM=2900, PP=6.25, NP=2 -> FMZ=232, IMZ=255.2, 50% MZ=243.6,
-        # E50=121.8 pips (spec §6), i.e. 0.01218 at 0.0001 per pip.
-        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
-        low = [e for e in build_envelopes(bars, pivots, spec_6e(), log) if not e.pivot.is_high][0]
-        assert low.e50_price == pytest.approx(low.pivot.price + 0.01218)
-
-    def test_is_halfway_between_pivot_and_mz50(self, log):
-        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
-        for e in build_envelopes(bars, pivots, spec_6e(), log):
-            assert e.e50_price == pytest.approx((e.pivot.price + e.mid_price) / 2)
-
-    def test_a_high_pivots_e50_sits_below_the_pivot_and_outside_the_zone(self, log):
-        bars = ramp([1.10, 1.11, 1.12, 1.11, 1.10, 1.11, 1.12])
-        pivots = zigzag(bars, deviation_abs=0.01)
-        high = [e for e in build_envelopes(bars, pivots, spec_6e(), log) if e.pivot.is_high][0]
-        assert high.e50_price == pytest.approx(high.pivot.price - 0.01218)
-        # E50 sits between the pivot and FMZ, not inside [FMZ, IMZ] — it is
-        # nearer to the pivot than FMZ is.
-        assert high.pivot.price - high.e50_price < high.pivot.price - high.fmz_price
-
-
-class TestRolloverPoints:
-    """Revised spec §5: one daily marker at the last price before T_roll."""
+class TestRolloverTracker:
+    """One daily marker at the last price strictly before T_roll."""
 
     def m15(self, prices: list[float], start: datetime) -> list[Bar]:
         return [
@@ -309,258 +300,76 @@ class TestRolloverPoints:
             for i, p in enumerate(prices)
         ]
 
+    def points(self, bars, rollover_hour=0, rollover_tz="UTC"):
+        tracker = RolloverTracker(rollover_hour, rollover_tz)
+        for bar in bars:
+            tracker.push(bar)
+        return tracker.points
+
     def test_empty_bars(self):
-        assert rollover_points([], rollover_hour=0, rollover_tz="UTC") == []
+        assert self.points([]) == []
 
     def test_one_point_per_day_using_the_last_bar_before_midnight(self):
-        # 23:00, 23:15, 23:30, 23:45 on day 1, then one bar on day 2 so the
-        # scan reaches day 2's own T_roll -> the 23:45 close is its point.
+        # 23:00 to 23:45 on day 1, then a bar on day 2 so day 2's own T_roll
+        # settles -> the 23:45 close is its point.
         bars = self.m15([10, 11, 12, 13], start=datetime(2024, 1, 1, 23, 0, tzinfo=UTC))
         bars += self.m15([99], start=datetime(2024, 1, 2, 0, 30, tzinfo=UTC))
-        points = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
+        points = self.points(bars)
         assert [p.day for p in points] == [date(2024, 1, 2)]
         assert points[0].price == 13
         assert points[0].roll_time == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
         assert points[0].bar_time == datetime(2024, 1, 1, 23, 45, tzinfo=UTC)
 
     def test_first_day_with_nothing_before_it_gets_no_point(self):
-        # Data starts at day 1's own midnight, so T_roll(day 1) has no bar
-        # before it at all; day 2 does, and must not be skipped too.
         bars = self.m15([10, 11, 12, 13], start=datetime(2024, 1, 1, 0, 0, tzinfo=UTC))
         bars += self.m15([99], start=datetime(2024, 1, 2, 0, 30, tzinfo=UTC))
-        points = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
+        points = self.points(bars)
         assert [p.day for p in points] == [date(2024, 1, 2)]
         assert points[0].price == 13
 
     def test_the_bar_at_or_after_roll_time_is_never_used(self):
-        # A bar exactly at midnight belongs to the new session, not the
-        # previous one's rollover price (validation rule 12).
+        # A bar exactly at midnight belongs to the new session.
         bars = self.m15([10, 11], start=datetime(2024, 1, 1, 23, 45, tzinfo=UTC))
         assert bars[1].time == datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
-        points = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
-        day2 = [p for p in points if p.day == date(2024, 1, 2)]
+        day2 = [p for p in self.points(bars) if p.day == date(2024, 1, 2)]
         assert day2 and day2[0].price == 10          # the 23:45 bar, not the 00:00 one
 
     def test_weekend_gap_collapses_into_one_point_not_two(self):
-        # Friday bars, then nothing until Sunday night (the realistic FX/CFD
-        # reopen, before Monday's own midnight). Saturday's T_roll finds
-        # Friday's last bar; Sunday's T_roll finds that same bar again (no
-        # new data yet) and must not repeat it; Monday's T_roll finds fresh
-        # Sunday-night data.
+        # Friday bars, then nothing until Sunday night. Saturday's T_roll finds
+        # Friday's last bar; Sunday's finds that same bar and must not repeat
+        # it; Monday's finds fresh Sunday-night data.
         friday = self.m15([100, 101, 102, 103], start=datetime(2024, 1, 5, 23, 0, tzinfo=UTC))
         sunday = self.m15(
             [110, 111, 112, 113, 114, 115, 116, 117], start=datetime(2024, 1, 7, 22, 0, tzinfo=UTC)
         )
-        monday_anchor = self.m15([120], start=datetime(2024, 1, 8, 0, 0, tzinfo=UTC))
-        points = rollover_points(friday + sunday + monday_anchor, rollover_hour=0, rollover_tz="UTC")
+        monday = self.m15([120], start=datetime(2024, 1, 8, 0, 0, tzinfo=UTC))
+        points = self.points(friday + sunday + monday)
         assert [p.day for p in points] == [date(2024, 1, 6), date(2024, 1, 8)]
         assert points[0].price == 103   # Saturday <- Friday 23:45
         assert points[1].price == 117   # Monday   <- Sunday 23:45, not Friday again
 
     def test_rollover_tz_shifts_which_bar_is_picked(self):
-        # Break at 00:00 UTC+3 is 21:00 UTC the day before — earlier than the
-        # plain-UTC case, so a different (earlier) bar becomes the price.
+        # Break at 00:00 UTC+3 is 21:00 UTC the day before, so an earlier bar
+        # becomes the price.
         bars = self.m15([5], start=datetime(2024, 1, 1, 20, 0, tzinfo=UTC))
         bars += self.m15([10, 11, 12, 13], start=datetime(2024, 1, 1, 22, 0, tzinfo=UTC))
         bars += self.m15([99], start=datetime(2024, 1, 2, 1, 0, tzinfo=UTC))
-        utc = rollover_points(bars, rollover_hour=0, rollover_tz="UTC")
-        shifted = rollover_points(bars, rollover_hour=0, rollover_tz="UTC+3")
-        assert utc[0].price == 13      # last bar before 2024-01-02 00:00 UTC
-        assert shifted[0].price == 5   # last bar before 2024-01-01 21:00 UTC
-
-
-class TestEnvelopeAt:
-    """Which Margin Zone was active at a given time — the crossing engine's lookup."""
-
-    def envelope(self, direction: int, start_index: int, end_index: int) -> Envelope:
-        pivot = Pivot(
-            index=start_index, time=T0 + timedelta(hours=4 * start_index), price=100.0,
-            kind="high" if direction < 0 else "low",
-            confirm_index=start_index + 1, confirm_time=T0,
-        )
-        return Envelope(
-            pivot=pivot, start_index=start_index, end_index=end_index, direction=direction,
-            fmz_price=90.0, imz_price=80.0, fmz_pips=10.0, imz_pips=20.0,
-            maintenance=1000.0, margin_as_of=date(2024, 1, 1),
-        )
-
-    def test_before_any_coverage_is_none(self):
-        bars = ramp([1.0] * 10)
-        env = self.envelope(-1, start_index=2, end_index=6)
-        assert envelope_at([env], bars, bars[0].time) is None
-
-    def test_within_range_returns_the_envelope(self):
-        bars = ramp([1.0] * 10)
-        env = self.envelope(-1, start_index=2, end_index=6)
-        assert envelope_at([env], bars, bars[2].time) is env    # inclusive start
-        assert envelope_at([env], bars, bars[5].time) is env
-
-    def test_at_its_own_end_index_is_no_longer_covered(self):
-        # end_index is the next pivot's own bar — it belongs to whatever
-        # comes after, not to this envelope. A second envelope has to be
-        # present, or the "last envelope is open-ended" rule below would
-        # make this one open-ended too.
-        bars = ramp([1.0] * 10)
-        env = self.envelope(-1, start_index=2, end_index=6)
-        following = self.envelope(-1, start_index=6, end_index=9)
-        assert envelope_at([env, following], bars, bars[6].time) is following
-
-    def test_a_gap_between_envelopes_resolves_to_none(self):
-        # Simulates a pivot skipped for lacking a margin reading: envelope A
-        # ends at bar 6, envelope B only starts at bar 7 — bar 6 itself is
-        # covered by neither.
-        bars = ramp([1.0] * 10)
-        a = self.envelope(-1, start_index=2, end_index=6)
-        b = self.envelope(-1, start_index=7, end_index=9)
-        assert envelope_at([a, b], bars, bars[6].time) is None
-        assert envelope_at([a, b], bars, bars[7].time) is b
-
-    def test_the_last_envelope_is_open_ended(self):
-        # Its end_index is just the last bar in the dataset, not a boundary
-        # set by a following pivot — there is no "next" to close it off.
-        bars = ramp([1.0] * 10)
-        env = self.envelope(-1, start_index=7, end_index=9)
-        assert envelope_at([env], bars, bars[9].time) is env
-        assert envelope_at([env], bars, bars[9].time + timedelta(days=365)) is env
-
-    def test_no_envelopes_is_none(self):
-        bars = ramp([1.0] * 10)
-        assert envelope_at([], bars, bars[0].time) is None
-
-
-class TestRolloverCrossings:
-    """§5.5: rollover-to-rollover crossings of the 50% Extremum-to-50% MZ level."""
-
-    def envelope(self, direction: int, start_index: int = 0, end_index: int = 29) -> Envelope:
-        pivot = Pivot(
-            index=start_index, time=T0, price=100.0,
-            kind="high" if direction < 0 else "low",
-            confirm_index=start_index + 1, confirm_time=T0,
-        )
-        # fmz/imz chosen so mid_price = (fmz+imz)/2 = 80, e50 = (100+80)/2 = 90,
-        # for a "high" envelope; a "low" one is the mirror image (e50 = 110).
-        fmz, imz = (90.0, 70.0) if direction < 0 else (110.0, 130.0)
-        return Envelope(
-            pivot=pivot, start_index=start_index, end_index=end_index, direction=direction,
-            fmz_price=fmz, imz_price=imz, fmz_pips=10.0, imz_pips=30.0,
-            maintenance=1000.0, margin_as_of=date(2024, 1, 1),
-        )
-
-    def rp(self, day_offset: int, price: float, hour: int = 0) -> RolloverPoint:
-        day = date(2024, 1, 1) + timedelta(days=day_offset)
-        roll_time = datetime(day.year, day.month, day.day, hour, tzinfo=UTC)
-        return RolloverPoint(day=day, roll_time=roll_time, price=price,
-                             bar_time=roll_time - timedelta(minutes=15))
-
-    def test_downward_crossing_of_a_max_zone_is_true(self):
-        # Max zone (direction=-1): the zone sits below E_level, so a downward
-        # crossing moves price toward it.
-        env = self.envelope(-1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price + 5), self.rp(2, env.e50_price - 5)]
-        events = rollover_crossings(points, [env], bars)
-        assert len(events) == 1
-        assert events[0].direction == "down"
-        assert events[0].classification == "True"
-        assert events[0].current is points[1]
-        assert events[0].e_level == pytest.approx(env.e50_price)
-
-    def test_upward_crossing_of_a_max_zone_is_false(self):
-        env = self.envelope(-1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price - 5), self.rp(2, env.e50_price + 5)]
-        events = rollover_crossings(points, [env], bars)
-        assert len(events) == 1
-        assert events[0].direction == "up"
-        assert events[0].classification == "False"
-
-    def test_upward_crossing_of_a_min_zone_is_true(self):
-        # Min zone (direction=+1): the zone sits above E_level, so an upward
-        # crossing moves price toward it.
-        env = self.envelope(1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price - 5), self.rp(2, env.e50_price + 5)]
-        events = rollover_crossings(points, [env], bars)
-        assert len(events) == 1
-        assert events[0].direction == "up"
-        assert events[0].classification == "True"
-
-    def test_downward_crossing_of_a_min_zone_is_false(self):
-        env = self.envelope(1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price + 5), self.rp(2, env.e50_price - 5)]
-        events = rollover_crossings(points, [env], bars)
-        assert len(events) == 1
-        assert events[0].classification == "False"
-
-    def test_no_event_when_both_points_are_on_the_same_side(self):
-        env = self.envelope(-1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price + 5), self.rp(2, env.e50_price + 3)]
-        assert rollover_crossings(points, [env], bars) == []
-
-    def test_no_event_when_a_point_sits_exactly_on_the_level(self):
-        # Validation rule 17: equal-to-level does not count as "opposite sides."
-        env = self.envelope(-1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price), self.rp(2, env.e50_price - 5)]
-        assert rollover_crossings(points, [env], bars) == []
-
-    def test_baseline_resets_across_a_new_envelope(self):
-        # Two envelopes, back to back. A crossing entirely inside envelope A
-        # fires; the transition into B does not, even though it also crosses
-        # numerically; a fresh crossing entirely inside B fires again.
-        bars = ramp([1.0] * 30)
-        a = self.envelope(-1, start_index=0, end_index=16)
-        b = self.envelope(-1, start_index=16, end_index=29)
-        points = [
-            self.rp(1, a.e50_price + 5, hour=0),                            # in A (t=T0+24h)
-            self.rp(2, a.e50_price - 5, hour=0),                            # in A (t=T0+48h) -> event 1
-            self.rp(3, b.e50_price + 5, hour=22),                           # in B (t=T0+70h)
-            self.rp(4, b.e50_price - 5, hour=22),                           # in B (t=T0+94h) -> event 2
-        ]
-        assert envelope_at([a, b], bars, points[1].roll_time) is a
-        assert envelope_at([a, b], bars, points[2].roll_time) is b
-
-        events = rollover_crossings(points, [a, b], bars)
-        assert len(events) == 2
-        assert events[0].current is points[1]
-        assert events[1].current is points[3]
-
-    def test_a_wide_gap_is_not_bridged(self):
-        env = self.envelope(-1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price + 5), self.rp(11, env.e50_price - 5)]
-        assert rollover_crossings(points, [env], bars, max_gap_days=3) == []
-
-    def test_a_weekend_sized_gap_is_bridged(self):
-        env = self.envelope(-1)
-        bars = ramp([1.0] * 30)
-        points = [self.rp(1, env.e50_price + 5), self.rp(3, env.e50_price - 5)]
-        events = rollover_crossings(points, [env], bars, max_gap_days=3)
-        assert len(events) == 1
+        assert self.points(bars)[0].price == 13                        # before 01-02 00:00 UTC
+        assert self.points(bars, rollover_tz="UTC+3")[0].price == 5    # before 01-01 21:00 UTC
 
 
 class TestReportName:
     """Timestamp-first, so runs sort chronologically and never collide."""
 
     def test_it_leads_with_a_utc_stamp_then_the_inputs(self):
-        from backtester.strategies.margin_zones import report_name
-
         name = report_name("EURUSD", "H4", "6E", "2%", stamp=T0)
         assert name == "20240101-000000_zones_EURUSD_H4_6E_dev2pct"
 
     def test_two_runs_a_second_apart_do_not_collide(self):
-        from datetime import timedelta
-
-        from backtester.strategies.margin_zones import report_name
-
         a = report_name("EURUSD", "H4", "6E", "2%", stamp=T0)
         b = report_name("EURUSD", "H4", "6E", "2%", stamp=T0 + timedelta(seconds=1))
         assert a != b
         assert sorted([b, a]) == [a, b]      # chronological by string sort
 
     def test_pips_thresholds_survive_the_slug(self):
-        from backtester.strategies.margin_zones import report_name
-
         assert report_name("EURUSD", "H4", "6E", "250 pips", stamp=T0).endswith("dev250pips")

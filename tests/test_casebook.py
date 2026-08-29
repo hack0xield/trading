@@ -32,7 +32,7 @@ def trade(n: int, entry: float, exit_: float, sl: float, tp: float,
     )
 
 
-def run(trades: list[Trade], strategy: str = "senior25") -> BacktestResult:
+def run(trades: list[Trade], strategy: str = "mz50") -> BacktestResult:
     return BacktestResult(
         strategy=strategy, symbol="EURUSD", timeframe="H4", trades=trades,
         start=START, end=START + timedelta(days=30),
@@ -107,8 +107,8 @@ class TestClassification:
         assert case.session == "New York"
 
     def test_models_carries_the_strategy(self):
-        (case,) = casebook.build(run([trade(1, 1.10, 1.12, 1.09, 1.12)], "crossing50"))
-        assert case.model == "crossing50"
+        (case,) = casebook.build(run([trade(1, 1.10, 1.12, 1.09, 1.12)], "day_open"))
+        assert case.model == "day_open"
 
 
 class TestStatistics:

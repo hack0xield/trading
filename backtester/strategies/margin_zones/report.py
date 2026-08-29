@@ -1,17 +1,9 @@
-"""Rendering a margin-zone report: the chart, and the data behind it.
+"""The margin-zone chart and the CSV summary beside it.
 
-Extracted so `scripts/plot_zones.py` and the scheduled signal runner produce
-*identical* output. They compute the same pivots and envelopes; if each also
-rendered them separately the two would drift, and the artifact saved beside a
-signal would stop being evidence of what the signal actually saw.
-
-A report directory is self-describing and matches the backtest-run convention:
-
-    runs/20260807-201900_zones_EURUSD_H4_6E_dev2pct/
-        chart.html      the interactive chart, data inlined
-        pivots.csv      every confirmed pivot and its confirmation lag
-        envelopes.csv   every zone, with the margin reading behind it
-        summary.json    inputs, contract spec, statistics
+Everything drawn comes from one forward pass over the bars: the zone versions a
+`ZoneTracker` produced, the rollover points and crossings a `CrossingTracker`
+saw, and the trades the run recorded. Nothing is recomputed, so the picture and
+the run cannot disagree.
 """
 
 from __future__ import annotations
@@ -21,15 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ...core.types import Bar
+from ...indicators.zigzag import Candidate, Pivot, swing_sizes
+from .crossing import Crossing
 from .margins import ContractSpec
-from ...data.results import write_rows
-from .envelopes import Envelope, summarise
-from .rollover import RolloverCrossing, RolloverPoint
-from ...indicators.zigzag import Pivot, Provisional, swing_sizes
+from .rollover import RolloverPoint
+from .zones import ZoneVersion, summarise
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
-TEMPLATE_PATH = SCRIPTS / "plot_zones_template.html"
+TEMPLATE_PATH = SCRIPTS / "zone_chart_template.html"
 STYLE_PATH = SCRIPTS / "chart_style.css"
+
+Span = tuple[ZoneVersion, int, int]
 
 
 def report_name(
@@ -38,9 +32,7 @@ def report_name(
     """`<UTC stamp>_zones_<symbol>_<tf>_<contract>_dev<n>`.
 
     The timestamp leads so directories sort chronologically and a re-run never
-    overwrites an earlier one — the same shape `save_result` uses for backtests.
-    The inputs still follow it, so you can see what produced a report without
-    opening it.
+    overwrites an earlier one.
     """
     stamp = stamp or datetime.now(timezone.utc)
     slug = deviation.replace(" ", "").replace("%", "pct").replace(".", "_")
@@ -52,26 +44,20 @@ def build_payload(
     timeframe: str,
     bars: list[Bar],
     pivots: list[Pivot],
-    envelopes: list[Envelope],
-    prov: Provisional | None,
+    spans: list[Span],
     spec: ContractSpec,
     deviation: str,
     initial_ratio: float,
+    candidate: Candidate | None = None,
+    confirm_at: float | None = None,
     rollover: list[RolloverPoint] = (),
-    crossings: list[RolloverCrossing] = (),
-    levels: list[dict] = (),
+    crossings: list[Crossing] = (),
     trades: list[dict] = (),
     backtest: dict | None = None,
     strategy: str = "",
 ) -> dict:
-    """Everything the chart page needs, as one JSON-serialisable dict.
-
-    `levels` and `trades` are empty for an analysis run and populated for a
-    backtest, which is the whole difference between the two charts: the same
-    zones, with what a strategy did about them drawn on top.
-    """
-    stats = summarise(envelopes, bars)
-    index_of = {id(p): k for k, p in enumerate(pivots)}
+    """Everything the chart page needs, as one JSON-serialisable dict."""
+    stats = summarise(spans, bars)
     sizes = swing_sizes(pivots, as_pct=True)
     median_swing = sorted(sizes)[len(sizes) // 2] if sizes else 0.0
     mid_price = sum(b.close for b in bars) / len(bars) if bars else 0.0
@@ -109,17 +95,19 @@ def build_payload(
              "kind": p.kind, "ci": p.confirm_index}
             for p in pivots
         ],
-        "envelopes": [
+        "zones": [
             {
-                "pi": index_of[id(e.pivot)],
-                "i0": e.start_index, "i1": e.end_index, "dir": e.direction,
-                "fmz": round(e.fmz_price, 6), "imz": round(e.imz_price, 6),
-                "e50": round(e.e50_price, 6),
-                "pips": round(e.fmz_pips, 1), "mm": e.maintenance,
-                "asOf": e.margin_as_of.isoformat(),
-                "hit": e.touched(bars),
+                "id": z.zone_id, "leg": z.leg, "ver": z.version, "kind": z.kind,
+                "i0": i0, "i1": i1, "dir": z.direction,
+                "anch": round(z.anchor_price, 6), "ai": z.anchor_index,
+                "at": int(z.anchor_time.timestamp()),
+                "kt": int(z.known_time.timestamp()),
+                "mz0": round(z.mz0, 6), "mz100": round(z.mz100, 6),
+                "mid": round(z.mz50, 6), "e50": round(z.e50, 6),
+                "pips": round(z.zones.fmz, 1), "mm": z.zones.maintenance,
+                "asOf": z.zones.as_of.isoformat(), "ev": z.event_type,
             }
-            for e in envelopes
+            for z, i0, i1 in spans
         ],
         "rollover": [
             {"t": int(r.roll_time.timestamp()), "p": round(r.price, 6), "day": r.day.isoformat()}
@@ -127,22 +115,23 @@ def build_payload(
         ],
         "crossings": [
             {
-                "pi": index_of[id(c.envelope.pivot)],
-                "t": int(c.current.roll_time.timestamp()), "p": round(c.current.price, 6),
-                "day": c.current.day.isoformat(), "e50": round(c.e_level, 6),
+                "z": c.zone.zone_id,
+                "t": int(c.time.timestamp()), "p": round(c.current.price, 6),
+                "day": c.current.day.isoformat(), "e50": round(c.zone.e50, 6),
                 "dir": c.direction, "cls": c.classification,
                 "prevT": int(c.previous.roll_time.timestamp()),
                 "prevP": round(c.previous.price, 6),
                 "prevDay": c.previous.day.isoformat(),
+                "anch": round(c.zone.anchor_price, 6), "kind": c.zone.kind,
             }
             for c in crossings
         ],
-        "prov": None if prov is None else {
-            "i": prov.index, "p": round(prov.price, 6), "kind": prov.kind,
-            "confirmAt": round(prov.confirm_at, 6), "bars": prov.bars_since,
+        "cand": None if candidate is None else {
+            "i": candidate.index, "p": round(candidate.price, 6), "kind": candidate.kind,
+            "confirmAt": None if confirm_at is None else round(confirm_at, 6),
+            "bars": max(0, len(bars) - 1 - candidate.index),
         },
         "strategy": strategy or None,
-        "levels": list(levels),
         "trades": list(trades),
         "backtest": backtest or None,
         "stats": stats,
@@ -164,131 +153,57 @@ def render_chart(payload: dict, title: str) -> str:
     )
 
 
-def write_report(
-    directory: Path,
-    payload: dict,
-    bars: list[Bar],
-    pivots: list[Pivot],
-    envelopes: list[Envelope],
-    spec: ContractSpec,
-    margin_log: str = "",
-    chart: bool = True,
-    rollover: list[RolloverPoint] = (),
-    crossings: list[RolloverCrossing] = (),
-    summary_name: str = "summary.json",
-) -> Path:
-    """Write chart.html plus the CSVs the chart was built from.
-
-    `summary_name` exists because a backtest run directory already has a
-    `summary.json` — its parameters and metrics — and writing the zone summary
-    over it would destroy the record of what the run actually did. A strategy
-    rendering this report into its own run directory passes another name.
-    """
+def write_chart(directory: Path, payload: dict, summary_name: str = "zones.json") -> Path:
+    """Write `chart.html` and the run's zone summary into `directory`."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
-    if chart:
-        # A backtest and an analysis run draw the same layers, so the title is
-        # the only thing that says which of the two this page is.
-        name = payload.get("strategy")
-        title = (
-            f"{payload['symbol']} {payload['timeframe']} — {name} backtest"
-            if name else f"{payload['symbol']} {payload['timeframe']} — margin zones"
-        )
-        (directory / "chart.html").write_text(render_chart(payload, title), encoding="utf-8")
-
-    write_rows(directory / "pivots.csv", [
-        {
-            "n": n, "kind": p.kind, "extreme_index": p.index,
-            "extreme_time": p.time.isoformat(), "price": p.price,
-            "confirm_index": p.confirm_index, "confirm_time": p.confirm_time.isoformat(),
-            "lag_bars": p.lag_bars,
-        }
-        for n, p in enumerate(pivots)
-    ])
-
-    index_of = {id(p): n for n, p in enumerate(pivots)}
-    write_rows(directory / "envelopes.csv", [
-        {
-            "pivot_n": index_of[id(e.pivot)], "kind": e.pivot.kind, "direction": e.direction,
-            "pivot_time": e.pivot.time.isoformat(), "pivot_price": e.pivot.price,
-            "start_index": e.start_index, "end_index": e.end_index,
-            "fmz_price": round(e.fmz_price, 6), "imz_price": round(e.imz_price, 6),
-            "fmz_pips": round(e.fmz_pips, 2), "imz_pips": round(e.imz_pips, 2),
-            "mz_pips": round(e.imz_pips - e.fmz_pips, 2),
-            "mz50_price": round(e.mid_price, 6),
-            "e50_price": round(e.e50_price, 6),
-            "maintenance": e.maintenance, "margin_as_of": e.margin_as_of.isoformat(),
-            "reached_fmz": e.touched(bars), "reached_imz": e.reached_far(bars),
-        }
-        for e in envelopes
-    ])
-
-    if rollover:
-        write_rows(directory / "rollover.csv", [
-            {
-                "day": r.day.isoformat(), "roll_time": r.roll_time.isoformat(),
-                "price": round(r.price, 6), "bar_time": r.bar_time.isoformat(),
-            }
-            for r in rollover
-        ])
-
-    if crossings:
-        write_rows(directory / "crossings.csv", [
-            {
-                "pivot_n": index_of[id(c.envelope.pivot)], "kind": c.envelope.pivot.kind,
-                "pivot_time": c.envelope.pivot.time.isoformat(),
-                "pivot_price": c.envelope.pivot.price,
-                "prev_day": c.previous.day.isoformat(), "prev_price": round(c.previous.price, 6),
-                "day": c.current.day.isoformat(), "price": round(c.current.price, 6),
-                "e50_level": round(c.e_level, 6), "direction": c.direction,
-                "classification": c.classification,
-            }
-            for c in crossings
-        ])
+    name = payload.get("strategy")
+    title = (
+        f"{payload['symbol']} {payload['timeframe']} — {name}"
+        if name else f"{payload['symbol']} {payload['timeframe']} — margin zones"
+    )
+    path = directory / "chart.html"
+    path.write_text(render_chart(payload, title), encoding="utf-8")
 
     summary = {
         "symbol": payload["symbol"],
         "timeframe": payload["timeframe"],
-        "contract": spec.to_dict(),
+        "strategy": name,
         "period": {
-            "start": bars[0].time.isoformat() if bars else None,
-            "end": bars[-1].time.isoformat() if bars else None,
-            "bars": len(bars),
+            "start": payload["times"] and payload["times"][0],
+            "end": payload["times"] and payload["times"][-1],
+            "bars": len(payload["times"]),
         },
         "zigzag": {
             "deviation": payload["deviation"],
-            "pivots": len(pivots),
+            "pivots": len(payload["pivots"]),
             "median_swing_pct": payload["medianSwing"],
         },
         "zones": {
             "initial_ratio": payload["initialRatio"],
-            "count": len(envelopes),
             "fmz_pct_of_price": payload["fmzPct"],
             **payload["stats"],
         },
-        "provisional": payload["prov"],
-        "rollover": {"points": len(rollover)},
+        "candidate": payload["cand"],
+        "rollover": {"points": len(payload["rollover"])},
         "crossings": {
-            "count": len(crossings),
-            "true": sum(1 for c in crossings if c.classification == "True"),
-            "false": sum(1 for c in crossings if c.classification == "False"),
+            "count": len(payload["crossings"]),
+            "true": sum(1 for c in payload["crossings"] if c["cls"] == "True"),
+            "false": sum(1 for c in payload["crossings"] if c["cls"] == "False"),
         },
-        "margin_log": margin_log,
         "generated": payload["generated"],
     }
     with open(directory / summary_name, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, default=str)
-    return directory
+    return path
 
-
-# ------------------------------------------------------- backtest run reports
 
 def read_trades(run_dir: Path, bars: list[Bar]) -> list[dict]:
-    """A run's orders, read back from the trades.csv already written.
+    """A run's orders, read back from the `trades.csv` already written.
 
-    Bar indices are resolved by timestamp rather than taken from the run, so
-    the same rows can be drawn against a chart at any timeframe.
+    Bar indices are resolved by timestamp, so the rows can be drawn against a
+    chart at any timeframe.
     """
     import csv
     from bisect import bisect_right
@@ -321,11 +236,7 @@ def read_trades(run_dir: Path, bars: list[Bar]) -> list[dict]:
 
 
 def read_metrics(run_dir: Path) -> dict | None:
-    """The run's headline numbers, from the summary already written.
-
-    Read rather than recomputed, so the chart and the printed report cannot
-    quote different figures for the same run.
-    """
+    """The run's headline numbers, from the `summary.json` already written."""
     path = Path(run_dir) / "summary.json"
     if not path.exists():
         return None
@@ -337,83 +248,3 @@ def read_metrics(run_dir: Path) -> dict | None:
         "avg_bars_held", "initial_balance",
     )
     return {k: metrics[k] for k in keep if k in metrics} or None
-
-
-def write_zone_run(
-    run_dir: Path,
-    symbol: str,
-    timeframe: str,
-    bars: list[Bar],
-    pivots: list[Pivot],
-    spec: ContractSpec,
-    log,
-    initial_ratio: float,
-    code: str,
-    deviation: str,
-    deviation_pct: float | None = None,
-    deviation_abs: float | None = None,
-    rollover_hour: int = 0,
-    rollover_tz: str = "UTC",
-    rollover_bars: list[Bar] | None = None,
-    levels: list[dict] = (),
-    strategy: str = "",
-    rollover: bool = True,
-) -> Path:
-    """Render a backtest run as the margin-zones chart, with its trades on it.
-
-    Shared by every margin-zone strategy, so they cannot drift into drawing
-    subtly different pictures of the same zones. The strategy supplies its own
-    `levels` layer — the 25% control-zone geometry, say — and everything else
-    comes from the run: its pivots, its envelopes, its trades, its metrics.
-
-    Writes the same report layout an analysis run produces, so a backtest
-    directory and a `plot_zones.py` directory hold the same files. The zone
-    summary goes to `zones.json`; `summary.json` is the backtest's own.
-    """
-    from .envelopes import build_envelopes
-    from .rollover import rollover_crossings, rollover_points
-    from ...indicators.zigzag import provisional
-
-    run_dir = Path(run_dir)
-    envelopes = build_envelopes(bars, pivots, spec, log, initial_ratio, code)
-
-    # Daily rollover points and their E50 crossings are a layer in their own
-    # right, and a strategy that never consults them should not have its chart
-    # imply otherwise. Left out, the template drops the markers, the legend
-    # entries and the crossings table with them.
-    if rollover:
-        source = rollover_bars if rollover_bars is not None else bars
-        roll = rollover_points(source, rollover_hour, rollover_tz)
-        crossings = rollover_crossings(roll, envelopes, bars)
-    else:
-        roll, crossings = [], []
-
-    payload = build_payload(
-        symbol=symbol,
-        timeframe=timeframe,
-        bars=bars,
-        pivots=pivots,
-        envelopes=envelopes,
-        # The unconfirmed extreme in progress. Drawn, never traded — without
-        # it the ZigZag appears to stop dead at the last confirmation.
-        prov=(
-            provisional(bars, deviation_pct, deviation_abs, pivots)
-            if pivots and (deviation_pct or deviation_abs) else None
-        ),
-        spec=spec,
-        deviation=deviation,
-        initial_ratio=initial_ratio,
-        rollover=roll,
-        crossings=crossings,
-        levels=list(levels),
-        trades=read_trades(run_dir, bars),
-        backtest=read_metrics(run_dir),
-        strategy=strategy,
-    )
-    write_report(
-        run_dir, payload, bars, pivots, envelopes, spec,
-        margin_log=str(getattr(log, "path", "")), chart=True,
-        rollover=roll, crossings=crossings,
-        summary_name="zones.json",
-    )
-    return run_dir / "chart.html"

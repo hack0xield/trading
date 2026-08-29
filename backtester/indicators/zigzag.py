@@ -161,10 +161,8 @@ class ZigZagTracker:
     arrives and take back the pivots that bar confirmed.
 
     `push` returns at most one pivot, and it is returned on the bar that
-    confirmed it, never on the bar that holds the extreme. `ZigZagTracker(...)`
-    fed a whole series therefore ends up with exactly `zigzag(bars, ...)` —
-    `tests/test_senior25.py` pins that equivalence, which is what lets the
-    strategy be checked against the batch indicator everything else uses.
+    confirmed it, never on the bar that holds the extreme. Fed a whole series
+    it ends up with exactly `zigzag(bars, ...)`.
     """
 
     __slots__ = (

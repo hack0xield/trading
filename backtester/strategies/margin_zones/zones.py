@@ -1,33 +1,10 @@
-"""Margin Zones anchored on the ZigZag candidate, versioned as it moves.
+"""Margin Zones anchored on the ZigZag candidate, versioned as the candidate moves.
 
-Implements §3-§6 of `impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`.
-
-A zone drawn from a *confirmed* pivot is knowable only weeks after the extreme
-that defines it, and most of what it would have signalled has already happened
-by then. A zone drawn from the *candidate* — the running extreme of the leg in
-progress — is knowable immediately and uses nothing but closed bars. The catch
-is that the candidate moves, and a level that slides through a price series
-manufactures crossings on its own.
-
-**Zone versions are the answer to that.** Every strict extension of the
-candidate freezes a new, immutable zone: its own levels, its own `known_time`,
-its own crossing baseline. A crossing is only real when both observations were
-measured against the *same* version. Nothing is ever recalculated, so a level
-that existed at some moment keeps the value it had then, and a version cannot
-act on the bar that created it.
-
-Note what is deliberately *not* a new version (§3.3): an equal high or low
-moves the ZigZag's index to a later bar but changes no level, so it neither
-supersedes the current zone nor counts as an adverse extension. Confirmation of
-the pivot is likewise not an update of the candidate it confirms — it ends the
-leg, and the next leg's first candidate is a new zone in its own right.
-
-The level a signal is taken from is `e50`, the 50% Extremum-to-50% MZ level the
-margin-zone specification already defines — `anchor ± (dFMZ + dIMZ) / 4`, which
-sits between the extremum and the near boundary. The strategy specification
-calls that level `MZ50` while defining it as the zone midpoint; this project
-keeps its existing meaning, so the two documents differ on the name and on
-nothing else. `mz50_midpoint` is carried alongside for reference.
+A zone hangs off the *candidate* — the running extreme of the leg in progress —
+so it is knowable from closed bars alone. The candidate moves, and a level that
+slides through a price series would manufacture crossings on its own, so every
+strict extension of it freezes a new immutable version carrying its own levels,
+its own `known_time` and its own crossing baseline.
 """
 
 from __future__ import annotations
@@ -40,7 +17,7 @@ from ...core.types import Bar
 from ...indicators.zigzag import Candidate, Pivot, ZigZagTracker
 from .margins import MarginZones
 
-#: What produced a zone version, for the §12 record.
+#: What brought a zone version into existence.
 INITIAL = "initial"
 STRICT_EXTENSION = "strict_extension"
 ZONE_INPUT_CHANGE = "zone_input_change"
@@ -52,11 +29,8 @@ ZonesFor = Callable[[Candidate], Optional[MarginZones]]
 class ZoneVersion:
     """One immutable Margin Zone, valid from the moment it became knowable.
 
-    Frozen on purpose: §14's invariant 4 is that a historical zone level never
-    changes, and the cheapest way to guarantee that is to make it impossible.
-    A new anchor or a new margin reading produces a *new* version rather than
-    editing this one, and a trade keeps a reference to the exact version that
-    created it.
+    Frozen: a level that existed at some moment keeps the value it had then. A
+    new anchor or a new margin reading produces a new version instead.
     """
 
     zone_id: int
@@ -76,7 +50,7 @@ class ZoneVersion:
 
     @property
     def direction(self) -> int:
-        """Down from a high, up from a low."""
+        """Which way the zone is projected: down from a high, up from a low."""
         return -1 if self.kind == "high" else 1
 
     @property
@@ -94,29 +68,35 @@ class ZoneVersion:
 
     @property
     def mz100(self) -> float:
-        """The far boundary — the target."""
+        """The far boundary."""
         return self.anchor_price + self.direction * self.d_imz
 
     @property
-    def mz50_midpoint(self) -> float:
-        """Halfway between the boundaries. Carried for reference, not traded."""
+    def mz50(self) -> float:
+        """Halfway between the boundaries."""
         return (self.mz0 + self.mz100) / 2.0
 
     @property
     def e50(self) -> float:
-        """The signal level: halfway from the anchor to the zone's midpoint.
+        """The 50% Extremum-to-50% MZ level, `anchor +- (dFMZ + dIMZ) / 4`.
 
-        `anchor ± (dFMZ + dIMZ) / 4`. This is the 50% Extremum-to-50% MZ level
-        of the margin-zone specification, kept deliberately — see the module
-        docstring on where the two documents diverge.
+        Sits between the anchor and the near boundary, outside the zone itself.
         """
-        return (self.anchor_price + self.mz50_midpoint) / 2.0
+        return (self.anchor_price + self.mz50) / 2.0
 
-    def beyond_target(self, price: float) -> bool:
-        """Has price already reached or passed MZ100? Then there is no trade."""
+    @property
+    def lo(self) -> float:
+        return min(self.mz0, self.mz100)
+
+    @property
+    def hi(self) -> float:
+        return max(self.mz0, self.mz100)
+
+    def beyond(self, price: float) -> bool:
+        """Has price reached or passed the far boundary?"""
         return price <= self.mz100 if self.direction < 0 else price >= self.mz100
 
-    def as_row(self, invalidated: datetime | None = None) -> dict:
+    def as_row(self, until_time: datetime | None = None) -> dict:
         return {
             "zone_id": self.zone_id,
             "candidate_leg_id": self.leg,
@@ -127,25 +107,22 @@ class ZoneVersion:
             "known_time": self.known_time.isoformat(),
             "mz0": self.mz0,
             "e50": self.e50,
-            "mz50_midpoint": self.mz50_midpoint,
+            "mz50": self.mz50,
             "mz100": self.mz100,
             "d_fmz_pips": round(self.zones.fmz, 2),
             "d_imz_pips": round(self.zones.imz, 2),
             "maintenance": self.zones.maintenance,
             "margin_as_of": self.zones.as_of.isoformat(),
             "event_type": self.event_type,
-            "valid_from_time": self.known_time.isoformat(),
-            "invalidated_time": invalidated.isoformat() if invalidated else "",
+            "superseded_time": until_time.isoformat() if until_time else "",
         }
 
 
-class ProvisionalZoneTracker:
+class ZoneTracker:
     """Bars in, zone versions out. Sees nothing but closed bars.
 
-    Feed each closed bar; `push` returns the version created by it, if any.
-    Only the newest version is eligible for new entries — `active` — but every
-    version is kept, because a trade outlives the anchor that created it and
-    §12 wants the whole history, including candidates that never confirmed.
+    Feed each closed bar; `push` returns the version that bar created, if any.
+    Only the newest version — `active` — is current, and every version is kept.
     """
 
     def __init__(
@@ -167,12 +144,12 @@ class ProvisionalZoneTracker:
 
         self.active: ZoneVersion | None = None
         self.versions: list[ZoneVersion] = []
-        self.invalidated: dict[int, datetime] = {}
+        self.superseded: dict[int, tuple[int, datetime]] = {}
         self.uncovered: list[Candidate] = []   # no margin reading on that date
 
     @property
     def pivots(self) -> list[Pivot]:
-        """Confirmed pivots. Diagnostics only — never an entry filter (§3.1)."""
+        """Confirmed pivots, a by-product of the same ZigZag."""
         return self._zigzag.pivots
 
     @property
@@ -180,18 +157,18 @@ class ProvisionalZoneTracker:
         return self._candidate
 
     def push(self, bar: Bar) -> ZoneVersion | None:
-        """Feed the next closed bar; returns the zone version it created, if any.
+        """Feed the next closed bar; return the zone version it created, if any.
 
-        Called *after* the bar's crossing observations have been processed
-        against the previously active version — §5.2's ordering, which stops a
-        closed bar from creating a zone and then signalling inside itself.
+        Called after the bar's crossing observations have been read against the
+        previously active version, so a bar cannot mint a zone and then signal
+        against it using its own already-past prices.
         """
         index = self._count
         self._count += 1
         self._zigzag.push(bar)
 
         candidate = self._zigzag.candidate
-        if candidate is None:                      # no search direction yet (§3.2)
+        if candidate is None:                      # no search direction yet
             return None
 
         previous = self._candidate
@@ -212,7 +189,7 @@ class ProvisionalZoneTracker:
             self._version = 1
 
         if self.active is not None:
-            self.invalidated[self.active.zone_id] = bar.time
+            self.superseded[self.active.zone_id] = (index, bar.time)
 
         version = ZoneVersion(
             zone_id=self._next_id,
@@ -234,14 +211,56 @@ class ProvisionalZoneTracker:
         return version
 
     def _event_for(self, candidate: Candidate, previous: Candidate | None) -> str | None:
-        """Why a new version is due, or None if nothing changed that matters."""
+        """Why a new version is due, or None if nothing that matters changed.
+
+        An equal high or low moves the ZigZag's index to a later bar but changes
+        no level, so it is not an extension.
+        """
         if self.active is None or candidate.leg != self.active.leg:
             return INITIAL
         if candidate.extends(previous):
             return STRICT_EXTENSION
-        # The anchor stands. A different margin reading still moves every level,
-        # so it is a new version even though the candidate has not moved (§3.4).
+        # The anchor stands, but a different margin reading moves every level.
         zones = self._zones_for(candidate)
         if zones is not None and zones.as_of != self.active.zones.as_of:
             return ZONE_INPUT_CHANGE
         return None
+
+
+def zone_spans(
+    versions: list[ZoneVersion],
+    superseded: dict[int, tuple[int, datetime]],
+    last_index: int,
+) -> list[tuple[ZoneVersion, int, int]]:
+    """Each version with the bar range over which it was the active zone."""
+    out = []
+    for version in versions:
+        end = superseded.get(version.zone_id, (last_index + 1, None))[0] - 1
+        out.append((version, version.known_index, min(max(end, version.known_index), last_index)))
+    return out
+
+
+def summarise(spans: list[tuple[ZoneVersion, int, int]], bars: list[Bar]) -> dict:
+    """How often price reached a zone while that zone was the active one."""
+    if not spans:
+        return {"zones": 0}
+    near = far = 0
+    for version, i0, i1 in spans:
+        window = bars[i0 : i1 + 1]
+        if any(b.low <= version.hi and b.high >= version.lo for b in window):
+            near += 1
+        if any(
+            (b.high >= version.mz100 if version.direction > 0 else b.low <= version.mz100)
+            for b in window
+        ):
+            far += 1
+    n = len(spans)
+    return {
+        "zones": n,
+        "reached_mz0": near,
+        "reached_mz0_pct": near / n * 100.0,
+        "reached_mz100": far,
+        "reached_mz100_pct": far / n * 100.0,
+        "avg_fmz_pips": sum(v.zones.fmz for v, _, _ in spans) / n,
+        "distinct_margins": len({v.zones.maintenance for v, _, _ in spans}),
+    }

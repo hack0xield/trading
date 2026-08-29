@@ -1,0 +1,44 @@
+# Margin zones on the ZigZag candidate — one forward pass, no orders yet.
+#
+#   scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
+#
+# The run records the ZigZag, the zone versions and the daily rollover
+# crossings exactly as they became knowable, and draws them. `place_orders`
+# turns the trading rule on; with it false the run is a drawing pass over the
+# support components.
+
+strategy: mz50
+symbol: EURUSD
+timeframe: H4              # the zones and the ZigZag are H4
+
+data: parquet://data/bars
+start: 2022-01-01
+# end: 2024-12-31          # uncommented, this holds 2025+ back as out-of-sample
+
+params:
+  volume: 0.1
+
+  # --- the zones ---------------------------------------------------------
+  contract: 6E             # margin comes from Euro FX futures; EUR/USD CFD is traded
+  deviation_pct: 2.0       # retracement that confirms a ZigZag pivot, as a % of
+                           # the extreme's price — ~220 pips on EUR/USD at 1.10.
+                           # Higher: fewer, larger swings, confirmed later.
+  initial_ratio: 1.1
+
+  # --- the observations --------------------------------------------------
+  rollover_hour: 0         # the daily CFD break. On H4 the 20:00 bar closes
+  rollover_tz: UTC         # exactly here, so its close is the rollover price.
+  max_gap_days: 3          # a weekend collapses into 2-3 calendar days; wider
+                           # than this is treated as missing data, and no
+                           # crossing is formed across it.
+
+  # --- the trading -------------------------------------------------------
+  place_orders: false      # true hands crossings to the trading rule
+
+execution:
+  initial_balance: 100000
+  leverage: 100
+  slippage_points: 0
+  commission_per_lot: 0
+  apply_swap: true
+  intrabar: conservative   # a bar holding both stop and target resolves as the stop
