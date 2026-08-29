@@ -346,3 +346,45 @@ class TestChartRenders:
         )
         assert title.startswith("XAUUSD H4 — mz50,")
         assert "zone versions" in title
+
+
+class TestCandidateFan:
+    """Each candidate is joined back to the pivot that opened its leg."""
+
+    def payload(self, desk, gold, config, tmp_path) -> dict:
+        import re
+
+        from backtester.data.results import save_result
+        from backtester.metrics import compute
+
+        strategy = MZ50Strategy(**desk)
+        result = run(strategy, crossing_setup(), gold, config)
+        directory = save_result(result, compute(result).to_dict(), root=tmp_path)
+        strategy.chart(directory, "parquet://data/bars", "H4")
+        page = (directory / "chart.html").read_text(encoding="utf-8")
+        return json.loads(re.search(r'(\{"symbol".*?\})\s*;', page, re.S).group(1))
+
+    def test_every_zone_names_its_opening_pivot(self, desk, gold, config, tmp_path):
+        payload = self.payload(desk, gold, config, tmp_path)
+        drawn = [z for z in payload["zones"] if z["pi"] is not None]
+        assert drawn, "no candidate had a pivot to join back to"
+        for zone in drawn:
+            assert 0 <= zone["pi"] < len(payload["pivots"])
+
+    def test_the_opening_pivot_is_the_opposite_kind(self, desk, gold, config, tmp_path):
+        """Confirming a high starts a low-candidate leg, and the reverse."""
+        payload = self.payload(desk, gold, config, tmp_path)
+        for zone in payload["zones"]:
+            if zone["pi"] is None:
+                continue
+            assert payload["pivots"][zone["pi"]]["kind"] != zone["kind"]
+
+    def test_the_line_never_predates_its_pivots_confirmation(
+        self, desk, gold, config, tmp_path
+    ):
+        """The fan is drawable at the anchor's own bar — it reads no future."""
+        payload = self.payload(desk, gold, config, tmp_path)
+        for zone in payload["zones"]:
+            if zone["pi"] is None:
+                continue
+            assert payload["pivots"][zone["pi"]]["ci"] <= zone["i0"]

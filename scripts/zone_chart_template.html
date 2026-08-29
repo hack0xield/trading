@@ -318,6 +318,9 @@ $("statnote").textContent =
 for (const [color, glyph, text] of [
   ["var(--price)", "", `${DATA.symbol} price (${DATA.timeframe} close)`],
   ["var(--text-primary)", "", "ZigZag — confirmed swing pivots, drawn at the extreme they name"],
+  ["var(--muted)", "",
+   "Dashed line back to a pivot = one candidate. Each leg fans outward from the " +
+   "pivot that opened it, in the candidate's own colour"],
   ["var(--win)", "●", "Low candidate — zone above it: 0% MZ, 100% MZ"],
   ["var(--loss)", "●", "High candidate — zone below it, same boundaries"],
   ["var(--muted)", "", "Dotted staircase = the anchor, i.e. the candidate as it moved"],
@@ -516,6 +519,22 @@ function draw() {
 
   // ZigZag spine and its pivots, plus the candidate still in progress.
   if (drawZig()) {
+    // Every candidate a zone was anchored on, joined back to the pivot whose
+    // confirmation opened its leg. Dashed, because a candidate is not a pivot:
+    // the line is redrawn one step further out each time it extends, and the
+    // last one of a leg is the segment that ends up solid. Colour follows the
+    // candidate, so a leg's fan is the opposite colour to the pivot it leaves.
+    for (const z of ZONES) {
+      if (z.pi === null || z.pi === undefined) continue;
+      const p = DATA.pivots[z.pi];
+      if (Math.max(p.i, z.ai) < a || Math.min(p.i, z.ai) > b) continue;
+      plot.append(el("line", {
+        x1: x(p.i), y1: y(p.p), x2: x(z.ai), y2: y(z.anch),
+        stroke: z.dir > 0 ? "var(--win)" : "var(--loss)",
+        "stroke-width": 1, "stroke-opacity": 0.35, "stroke-dasharray": "4 3",
+      }));
+    }
+
     const near = DATA.pivots.filter((p) => p.i >= a - 400 && p.i <= b + 400);
     if (near.length > 1) {
       let d = "";

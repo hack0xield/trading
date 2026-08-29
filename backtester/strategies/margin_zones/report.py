@@ -99,6 +99,9 @@ def build_payload(
             {
                 "id": z.zone_id, "leg": z.leg, "ver": z.version, "kind": z.kind,
                 "i0": i0, "i1": i1, "dir": z.direction,
+                # The pivot whose confirmation opened this leg, so the chart can
+                # join the candidate back to the structure it came from.
+                "pi": z.leg - 1 if 0 <= z.leg - 1 < len(pivots) else None,
                 "anch": round(z.anchor_price, 6), "ai": z.anchor_index,
                 "at": int(z.anchor_time.timestamp()),
                 "kt": int(z.known_time.timestamp()),
