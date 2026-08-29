@@ -22,9 +22,9 @@ INITIAL = "initial"
 STRICT_EXTENSION = "strict_extension"
 ZONE_INPUT_CHANGE = "zone_input_change"
 
-#: The two levels a crossing can be measured against. `mz50` is the zone's own
-#: midpoint and is what the strategy trades; `e50` sits half as far from the
-#: anchor and is carried for analysis.
+#: The two levels a crossing can be measured against, by name. `mz50` is the
+#: zone's own midpoint; `e50` sits half as far from the anchor. Both are
+#: recorded on every version whichever one a run trades against.
 MZ50 = "mz50"
 E50 = "e50"
 SIGNAL_LEVELS = (MZ50, E50)

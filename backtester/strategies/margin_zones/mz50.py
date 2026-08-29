@@ -12,8 +12,9 @@ measured against the same one.
 Entry is a True crossing of `mz50` — the zone's own midpoint — toward the zone:
 down through it from a high (SHORT), up from a low (LONG). Target is `mz100`,
 the far boundary, and the stop mirrors that distance about the actual fill, so
-reward and risk are 1:1 against the price really paid. `e50` sits half as far
-from the anchor and is recorded on every version, never traded.
+reward and risk are 1:1 against the price really paid. `e50`, at half that
+distance from the anchor, is recorded on every version too and can be traded
+instead with `signal_level: e50`.
 
 `place_orders: false` runs the same pass with the trading rule switched off, so
 the run draws the components and places nothing.

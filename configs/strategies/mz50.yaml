@@ -36,11 +36,14 @@ params:
 
   # --- the trading -------------------------------------------------------
   place_orders: true       # false = draw the support components, trade nothing
-  signal_level: mz50       # the level a crossing is measured against. mz50 is
-                           # the zone's own midpoint, anchor +- (dFMZ+dIMZ)/2 —
-                           # the entry level the specification requires. e50,
-                           # half as far from the anchor, is recorded on every
-                           # zone version but is analysis only.
+  signal_level: mz50       # which level a crossing must cross to signal.
+                           # mz50 — the zone's midpoint, anchor +- (dFMZ+dIMZ)/2
+                           # — is the specification's entry. e50 sits at half
+                           # that distance from the anchor: crossed far more
+                           # often (167 against 16 here) and risking roughly
+                           # 20x as much per trade, since the stop mirrors the
+                           # distance to MZ100. Both levels are recorded on
+                           # every zone version whichever one is traded.
   variant: KEEP_OPEN       # or CLOSE_ON_CANDIDATE_UPDATE. The only difference is
                            # whether a later strict extension of the originating
                            # candidate closes an open trade.
