@@ -332,6 +332,12 @@ class TestChartRenders:
         assert "zone rows   : 0" not in out.stdout
         assert "pivot rows  : 0" not in out.stdout
 
+    def test_hovering_fills_the_docked_readout(self, desk, gold, config, tmp_path):
+        """The hover detail lives in its own block, not in a floating tooltip."""
+        out = self.render(desk, gold, config, tmp_path)
+        assert "hover fired: yes" in out.stdout
+        assert "readout blocks: 0" not in out.stdout
+
     def test_the_title_says_what_the_run_was(self, desk, gold, config, tmp_path):
         out = self.render(desk, gold, config, tmp_path)
         title = next(

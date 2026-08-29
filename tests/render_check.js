@@ -36,7 +36,9 @@ function node(tag, ns) {
     get lastChild() { return this.children[this.children.length - 1]; },
     get firstChild() { return this.children[0]; },
     appendChild(c) { this.children.push(c); return c; },
-    addEventListener() {}, removeEventListener() {}, focus() {},
+    handlers: {},
+    addEventListener(type, fn) { this.handlers[type] = fn; },
+    removeEventListener() {}, focus() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 900, height: 400 }),
     scrollTo() {}, remove() {},
   };
@@ -59,6 +61,10 @@ const sandbox = {
 try {
   vm.createContext(sandbox);
   vm.runInContext(m[1], sandbox, { filename: "chart.js" });
+  // Hover is where the readout is built; without firing it a throw there
+  // would never be seen, since the page loads fine without ever hovering.
+  const move = byId.scroller && byId.scroller.handlers.pointermove;
+  if (move) move({ clientX: 400, clientY: 200 });
   console.log(`OK: script ran to completion`);
   console.log(`  SVG elements created : ${created.svg}`);
   console.log(`  HTML elements created: ${created.html}`);
@@ -66,6 +72,8 @@ try {
   console.log(`  count  : ${byId.count ? byId.count.textContent : "(not set)"}`);
   console.log(`  order elements drawn  : ${created.trade}`);
   console.log(`  legend items: ${byId.legend ? byId.legend.children.length : 0}`);
+  console.log(`  readout blocks: ${byId.readout ? byId.readout.children.length : 0}`);
+  console.log(`  hover fired: ${move ? "yes" : "no"}`);
   console.log(`  zone rows   : ${byId.ztbody ? byId.ztbody.children.length : "n/a"}`);
   console.log(`  pivot rows  : ${byId.ptbody ? byId.ptbody.children.length : "n/a"}`);
   console.log(`  crossing rows: ${byId.ctbody ? byId.ctbody.children.length : "n/a"}`);

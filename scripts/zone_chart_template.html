@@ -10,6 +10,25 @@
   padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: var(--text-secondary);
 }
 .caution strong { color: var(--text-primary); }
+
+/* The hover readout, docked below the chart rather than floating over it. */
+.readout {
+  display: flex; flex-wrap: wrap; gap: 14px 38px; align-items: flex-start;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1);
+  padding: 13px 16px; margin: 12px 0 24px; min-height: 84px; box-sizing: border-box;
+}
+.readout .ro-group { min-width: 168px; }
+.readout .ro-cap {
+  color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 0.07em;
+  text-transform: uppercase; margin-bottom: 6px;
+}
+.readout .ro-row { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+.readout .ro-key {
+  width: 14px; height: 2px; border-radius: 1px; flex: 0 0 auto; position: relative; top: -3px;
+}
+.readout .ro-val { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.readout .ro-lab { color: var(--text-secondary); font-size: 11px; }
+.readout .ro-idle { color: var(--muted); font-size: 12px; align-self: center; }
 </style>
 
 <div class="viz-root">
@@ -54,8 +73,10 @@
       </div>
     </div>
     <div class="legend" id="legend"></div>
-    <p class="hint">Scroll sideways to move through time · hover for details · arrow keys pan when focused</p>
+    <p class="hint">Scroll sideways to move through time · hover the chart to fill the readout below · arrow keys pan when focused</p>
   </div>
+
+  <div class="readout" id="readout"></div>
 
   <details>
     <summary>Zone versions — every zone the run held, and when it held it</summary>
@@ -636,19 +657,80 @@ function schedule() {
 $("scroller").addEventListener("scroll", schedule, { passive: true });
 window.addEventListener("resize", schedule);
 
-// ---- hover ------------------------------------------------------------
+// ---- readout ----------------------------------------------------------
+// Docked below the chart and updated on hover. It holds the last reading
+// after the pointer leaves, so a number can be read without keeping the mouse
+// on the bar it came from.
 let crosshair = null;
-const tip = document.createElement("div");
-tip.className = "tooltip";
-document.body.append(tip);
 
-function row(color, value, label) {
-  const r = document.createElement("div"); r.className = "t-row";
-  if (color) { const k = document.createElement("span"); k.className = "t-key"; k.style.background = color; r.append(k); }
-  const v = document.createElement("span"); v.className = "t-val"; v.textContent = value;
-  const l = document.createElement("span"); l.className = "t-lab"; l.textContent = label;
-  r.append(v, l);
-  return r;
+function group(caption, rows) {
+  const g = document.createElement("div"); g.className = "ro-group";
+  const c = document.createElement("div"); c.className = "ro-cap"; c.textContent = caption;
+  g.append(c);
+  for (const [color, value, label] of rows) {
+    const r = document.createElement("div"); r.className = "ro-row";
+    if (color) {
+      const k = document.createElement("span");
+      k.className = "ro-key"; k.style.background = color;
+      r.append(k);
+    }
+    const v = document.createElement("span"); v.className = "ro-val"; v.textContent = value;
+    const l = document.createElement("span"); l.className = "ro-lab"; l.textContent = label;
+    r.append(v, l);
+    g.append(r);
+  }
+  return g;
+}
+
+function readoutIdle() {
+  const box = $("readout");
+  box.innerHTML = "";
+  const p = document.createElement("div");
+  p.className = "ro-idle";
+  p.textContent = "Hover the chart to read the bar, the zones covering it, and any crossing on its day.";
+  box.append(p);
+}
+
+function readout(i) {
+  const box = $("readout");
+  box.innerHTML = "";
+  box.append(group("Bar", [
+    [null, dt(DATA.times[i]), "time"],
+    ["var(--price)", px_(DATA.close[i]), "close"],
+    [null, `${px_(DATA.low[i])} – ${px_(DATA.high[i])}`, "low – high"],
+  ]));
+
+  for (const z of ZONES.filter((z) => i >= z.i0 && i <= z.i1).slice(0, 2)) {
+    const c = z.dir > 0 ? "var(--win)" : "var(--loss)";
+    box.append(group(`Zone ${z.id}  ·  ${z.leg}.${z.ver}`, [
+      [c, px_(z.anch), `${z.kind} candidate, ${day(z.at)}`],
+      [null, `${px_(z.mz0)} → ${px_(z.mz100)}`, `0%→100% MZ (${z.pips.toFixed(0)} pips)`],
+      [null, px_(z.e50), "50% Ext-MZ level"],
+      [null, z.mm.toLocaleString("en-US"), `MM as of ${z.asOf}`],
+    ]));
+  }
+
+  // Match a crossing by calendar day: it sits at a rollover instant, often
+  // between bars, so the exact timestamp would rarely line up.
+  const cross = CROSS.find((c) => c.day === day(DATA.times[i]));
+  if (cross) {
+    box.append(group("Rollover crossing", [
+      [cross.cls === "True" ? "var(--win)" : "var(--loss)",
+       `${cross.cls} (${cross.dir})`, `zone ${cross.z}`],
+      [null, px_(cross.e50), "50% Ext-MZ level"],
+      [null, `${px_(cross.prevP)} → ${px_(cross.p)}`, `${cross.prevDay} → ${cross.day}`],
+    ]));
+  }
+
+  const order = TRADES.find((t) => i >= t.i0 && i <= t.i1);
+  if (order) {
+    box.append(group(`Order ${order.id}`, [
+      [order.pnl > 0 ? "var(--trade-win)" : "var(--trade-loss)", order.side, "side"],
+      [null, `${px_(order.p0)} → ${px_(order.p1)}`, `${dt(order.t0)} → ${dt(order.t1)}`],
+      [null, (order.pnl >= 0 ? "+" : "") + order.pnl.toFixed(2),
+       order.reason.replace(/_/g, " ").toLowerCase()],
+    ]));
+  }
 }
 
 $("scroller").addEventListener("pointermove", (ev) => {
@@ -659,42 +741,9 @@ $("scroller").addEventListener("pointermove", (ev) => {
     crosshair.setAttribute("x1", x(i)); crosshair.setAttribute("x2", x(i));
     crosshair.setAttribute("visibility", "visible");
   }
-
-  tip.innerHTML = "";
-  const d = document.createElement("div"); d.className = "t-date"; d.textContent = dt(DATA.times[i]);
-  tip.append(d);
-  tip.append(row("var(--price)", px_(DATA.close[i]), "close"));
-
-  const here = ZONES.filter((z) => i >= z.i0 && i <= z.i1);
-  if (here.length) {
-    tip.append(document.createElement("hr"));
-    for (const z of here.slice(0, 2)) {
-      const c = z.dir > 0 ? "var(--win)" : "var(--loss)";
-      tip.append(row(c, px_(z.anch), `${z.kind} candidate, zone ${z.id} (${z.leg}.${z.ver})`));
-      tip.append(row(null, `${px_(z.mz0)} → ${px_(z.mz100)}`, `0%→100% MZ (${z.pips.toFixed(0)} pips)`));
-      tip.append(row(null, px_(z.e50), "50% Ext-MZ level"));
-      tip.append(row(null, z.mm.toLocaleString("en-US"), `MM as of ${z.asOf}`));
-    }
-  }
-
-  // Match a crossing by calendar day: it sits at a rollover instant, often
-  // between bars, so the exact timestamp would rarely line up.
-  const cross = CROSS.find((c) => c.day === day(DATA.times[i]));
-  if (cross) {
-    tip.append(document.createElement("hr"));
-    tip.append(row(
-      cross.cls === "True" ? "var(--win)" : "var(--loss)",
-      `${cross.cls} (${cross.dir})`, "rollover crossing",
-    ));
-    tip.append(row(null, px_(cross.e50), "50% Ext-MZ level"));
-    tip.append(row(null, `${px_(cross.prevP)} → ${px_(cross.p)}`, "prev → this rollover"));
-  }
-  tip.style.opacity = "1";
-  tip.style.left = Math.min(ev.clientX + 16, window.innerWidth - tip.offsetWidth - 10) + "px";
-  tip.style.top = Math.min(ev.clientY + 16, window.innerHeight - tip.offsetHeight - 10) + "px";
+  readout(i);
 });
 $("scroller").addEventListener("pointerleave", () => {
-  tip.style.opacity = "0";
   if (crosshair) crosshair.setAttribute("visibility", "hidden");
 });
 $("scroller").addEventListener("keydown", (ev) => {
@@ -705,6 +754,7 @@ $("scroller").addEventListener("keydown", (ev) => {
 
 layout();
 draw();
+readoutIdle();
 $("foot").textContent =
   `${N.toLocaleString()} ${DATA.timeframe} bars · ${ZONES.length} zone versions · ` +
   `generated ${DATA.generated}`;

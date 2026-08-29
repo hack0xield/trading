@@ -28,7 +28,7 @@ backtester/
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 signals/        scheduled Telegram heartbeats over the same code
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          319 tests, ~2s
+tests/          320 tests, ~2s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
