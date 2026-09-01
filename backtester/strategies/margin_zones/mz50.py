@@ -383,7 +383,13 @@ class MZ50Strategy(Strategy):
             signal_level=p.signal_level,
             trades=read_trades(run_dir, self._bars),
             backtest=read_metrics(run_dir),
-            strategy=f"{self.name} [{p.variant}]" if p.place_orders else self.name,
+            # The signal level changes what is drawn whether or not orders are
+            # placed, so it names the run either way.
+            strategy=(
+                f"{self.name} [{p.signal_level.upper()} entry, {p.variant}]"
+                if p.place_orders
+                else f"{self.name} [{p.signal_level.upper()} crossings, no orders]"
+            ),
         )
         return write_chart(run_dir, payload)
 

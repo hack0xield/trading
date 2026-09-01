@@ -36,7 +36,7 @@ params:
 
   # --- the trading -------------------------------------------------------
   place_orders: true       # false = draw the support components, trade nothing
-  signal_level: mz50       # which level a crossing must cross to signal.
+  signal_level: e50       # which level a crossing must cross to signal.
                            # mz50 — the zone's midpoint, anchor +- (dFMZ+dIMZ)/2
                            # — is the specification's entry. e50 sits at half
                            # that distance from the anchor: crossed far more

@@ -256,7 +256,8 @@ $("title").textContent = DATA.strategy
 $("subtitle").innerHTML = "";
 $("subtitle").append(
   `${day(DATA.times[0])} to ${day(DATA.times[N - 1])} · `,
-  `ZigZag deviation ${DATA.deviation} · margin from ${DATA.contract} `,
+  `signal level ${LVL} · ZigZag deviation ${DATA.deviation} · `,
+  `margin from ${DATA.contract} `,
   `(pip value ${DATA.pipValue.toFixed(2)} = PP ${DATA.tickValue} x NP ${DATA.np}) · `,
 );
 const codeEl = document.createElement("code");

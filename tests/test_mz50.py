@@ -440,3 +440,144 @@ class TestMZ50MakesVariantBUnreachable:
         assert [t.reason for t in a.trades] == [t.reason for t in b.trades]
         assert [t.exit_price for t in a.trades] == [t.exit_price for t in b.trades]
         assert all(c["exit_reason"] != "candidate_update" for c in b.artifacts["cases"])
+
+
+class TestChart:
+    """The run draws the margin-zone chart from its own forward pass."""
+
+    def payload(self, desk, gold, config, tmp_path) -> dict:
+        import re
+
+        from backtester.data.results import save_result
+        from backtester.metrics import compute
+
+        strategy = MZ50Strategy(**desk)
+        result = run(strategy, crossing_setup(), gold, config)
+        directory = save_result(result, compute(result).to_dict(), root=tmp_path)
+        assert strategy.chart(directory, "parquet://data/bars", "H4") is not None
+        page = (directory / "chart.html").read_text(encoding="utf-8")
+        return json.loads(re.search(r'(\{"symbol".*?\})\s*;', page, re.S).group(1))
+
+    def test_the_layers_are_present(self, desk, gold, config, tmp_path):
+        payload = self.payload(desk, gold, config, tmp_path)
+        assert payload["pivots"], "the ZigZag went missing"
+        assert payload["zones"], "the margin zones went missing"
+        assert payload["rollover"], "the rollover observations went missing"
+        assert payload["crossings"], "the crossings went missing"
+        assert payload["trades"], "the orders went missing"
+
+    def test_the_title_names_the_signal_level_and_the_variant(
+        self, desk, gold, config, tmp_path
+    ):
+        """Two runs differing only in signal_level must not share a title."""
+        on_mid = self.payload(desk, gold, config, tmp_path)
+        on_e50 = self.payload({**desk, "signal_level": E50}, gold, config, tmp_path)
+        assert on_mid["strategy"] == "mz50 [MZ50 entry, KEEP_OPEN]"
+        assert on_e50["strategy"] == "mz50 [E50 entry, KEEP_OPEN]"
+        assert on_mid["signalLevel"] == MZ50 and on_e50["signalLevel"] == E50
+
+    def test_the_title_names_the_variant_too(self, desk, gold, config, tmp_path):
+        payload = self.payload(
+            {**desk, "variant": CLOSE_ON_CANDIDATE_UPDATE}, gold, config, tmp_path
+        )
+        assert payload["strategy"] == "mz50 [MZ50 entry, CLOSE_ON_CANDIDATE_UPDATE]"
+
+    def test_a_drawing_run_says_it_placed_no_orders(self, desk, gold, config, tmp_path):
+        payload = self.payload({**desk, "place_orders": False}, gold, config, tmp_path)
+        assert payload["strategy"] == "mz50 [MZ50 crossings, no orders]"
+
+    def test_the_crossings_carry_the_level_they_were_measured_against(
+        self, desk, gold, config, tmp_path
+    ):
+        payload = self.payload(desk, gold, config, tmp_path)
+        for crossing in payload["crossings"]:
+            zone = next(z for z in payload["zones"] if z["id"] == crossing["z"])
+            assert crossing["lvl"] == pytest.approx(zone["mid"])
+
+    def test_a_zone_spans_from_when_it_became_knowable(self, desk, gold, config, tmp_path):
+        """i0 is the bar that created the version, never the bar holding the anchor."""
+        payload = self.payload(desk, gold, config, tmp_path)
+        for zone in payload["zones"]:
+            assert zone["i0"] >= zone["ai"]
+            assert zone["i1"] >= zone["i0"]
+
+    def test_the_candidate_still_in_progress_is_drawn(self, desk, gold, config, tmp_path):
+        payload = self.payload(desk, gold, config, tmp_path)
+        assert payload["cand"] is not None
+        assert payload["cand"]["confirmAt"] is not None
+
+
+class TestCandidateFan(TestChart):
+    """Each candidate is joined back to the pivot that opened its leg."""
+
+    def test_every_zone_names_its_opening_pivot(self, desk, gold, config, tmp_path):
+        payload = self.payload(desk, gold, config, tmp_path)
+        drawn = [z for z in payload["zones"] if z["pi"] is not None]
+        assert drawn, "no candidate had a pivot to join back to"
+        for zone in drawn:
+            assert 0 <= zone["pi"] < len(payload["pivots"])
+
+    def test_the_opening_pivot_is_the_opposite_kind(self, desk, gold, config, tmp_path):
+        """Confirming a high starts a low-candidate leg, and the reverse."""
+        payload = self.payload(desk, gold, config, tmp_path)
+        for zone in payload["zones"]:
+            if zone["pi"] is None:
+                continue
+            assert payload["pivots"][zone["pi"]]["kind"] != zone["kind"]
+
+    def test_the_line_never_predates_its_pivots_confirmation(
+        self, desk, gold, config, tmp_path
+    ):
+        """The fan is drawable at the anchor's own bar — it reads no future."""
+        payload = self.payload(desk, gold, config, tmp_path)
+        for zone in payload["zones"]:
+            if zone["pi"] is None:
+                continue
+            assert payload["pivots"][zone["pi"]]["ci"] <= zone["i0"]
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+class TestChartRenders:
+    """The page's script runs to completion under a stub DOM.
+
+    A throw anywhere in it leaves the page blank — no chart, no tables, and no
+    error visible without opening a console — so it is checked headlessly.
+    """
+
+    def render(self, desk, gold, config, tmp_path):
+        import subprocess
+
+        from backtester.data.results import save_result
+        from backtester.metrics import compute
+
+        strategy = MZ50Strategy(**desk)
+        result = run(strategy, crossing_setup(), gold, config)
+        directory = save_result(result, compute(result).to_dict(), root=tmp_path)
+        page = strategy.chart(directory, "parquet://data/bars", "H4")
+        return subprocess.run(
+            ["node", "tests/render_check.js", str(page)],
+            capture_output=True, text=True,
+        )
+
+    def test_the_page_runs_and_draws(self, desk, gold, config, tmp_path):
+        out = self.render(desk, gold, config, tmp_path)
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert "OK: script ran to completion" in out.stdout
+        assert "zone rows   : 0" not in out.stdout
+        assert "pivot rows  : 0" not in out.stdout
+        assert "order elements drawn  : 0" not in out.stdout
+
+    def test_hovering_fills_the_docked_readout(self, desk, gold, config, tmp_path):
+        """The hover detail lives in its own block, not in a floating tooltip."""
+        out = self.render(desk, gold, config, tmp_path)
+        assert "hover fired: yes" in out.stdout
+        assert "readout blocks: 0" not in out.stdout
+
+    def test_the_title_says_what_the_run_was(self, desk, gold, config, tmp_path):
+        out = self.render(desk, gold, config, tmp_path)
+        title = next(
+            line.split(":", 1)[1].strip()
+            for line in out.stdout.splitlines() if line.strip().startswith("title")
+        )
+        assert title.startswith("XAUUSD H4 — mz50 [MZ50 entry, KEEP_OPEN],")
+        assert "zone versions" in title and "orders" in title
