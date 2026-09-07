@@ -26,19 +26,13 @@ from backtester.strategies.margin_zones.mz50 import (
     KEEP_OPEN,
     MZ50Strategy,
 )
-from backtester.strategies.margin_zones.zones import (
-    E50,
-    INITIAL,
-    MZ50,
-    STRICT_EXTENSION,
-    ZoneTracker,
-)
+from backtester.strategies.margin_zones.zones import INITIAL, STRICT_EXTENSION, ZoneTracker
 
 UTC = timezone.utc
 START = datetime(2024, 1, 1, tzinfo=UTC)
 
 # 100 pips of FMZ and 110 of IMZ at a pip_size of 1.0, so from a high at 2000:
-#   MZ0 1900, MZ100 1890, MZ50 1895, E50 1947.5
+#   MZ0 1900, MZ100 1890, MZ50 1895, E50 1947.5 — E50 is the signal level.
 ZONES = MarginZones(code="TEST", as_of=date(2023, 1, 1), maintenance=10_000.0,
                     initial=11_000.0, pip_value=100.0, fmz=100.0, imz=110.0, mz=10.0)
 
@@ -101,19 +95,12 @@ class TestZoneVersions:
         assert version.mz100 == pytest.approx(anchor - 110)
         assert version.mz50 == pytest.approx(anchor - 105)      # (dFMZ + dIMZ) / 2
         assert version.e50 == pytest.approx(anchor - 52.5)      # (dFMZ + dIMZ) / 4
-        assert version.level(MZ50) == version.mz50
-        assert version.level(E50) == version.e50
 
     def test_mz50_is_inside_the_band_and_e50_outside_it(self):
         _, out = feed([1800, 1900, 1860, 2000, 1960])
         v = next(x for x in out if x is not None)
         assert v.lo <= v.mz50 <= v.hi
         assert not v.lo <= v.e50 <= v.hi
-
-    def test_an_unknown_level_is_rejected(self):
-        _, out = feed([1800, 1900, 1860, 2000, 1960])
-        with pytest.raises(ValueError, match="level must be one of"):
-            next(x for x in out if x is not None).level("mz25")
 
     def test_a_strict_extension_creates_a_new_version(self):
         tracker, _ = feed([1800, 1900, 1860, 2000, 2050, 2100])
@@ -156,10 +143,10 @@ class TestZoneVersions:
 
 
 class TestCrossing:
-    """§6 — when two rollover observations count as having crossed the level.
+    """§6 — when two rollover observations count as having crossed E50.
 
-    The threshold is 150 here, wider than the 105 from the 2000 anchor to its
-    MZ50 at 1895: a level further from the anchor than the ZigZag threshold can
+    The threshold is 150 here, wider than the 52.5 from the 2000 anchor to its
+    E50 at 1947.5: a level further from the anchor than the ZigZag threshold can
     never be reached, because the leg flips first.
     """
 
@@ -171,47 +158,45 @@ class TestCrossing:
             prices += [price] * 6
         return prices + [tail[-1]] * 6 if tail else prices
 
-    def run(self, tail, hold: float, level: str = MZ50):
-        tracker = CrossingTracker(zones_for, pip_size=1.0, deviation_abs=150.0, level=level)
+    def run(self, tail, hold: float):
+        tracker = CrossingTracker(zones_for, pip_size=1.0, deviation_abs=150.0)
         fired = []
         for i, p in enumerate(self.series(tail, hold)):
             fired += tracker.push(h4(i, p))
         return tracker, fired
 
     def test_a_downward_crossing_from_a_high_is_true(self):
-        """§15.4: MZ50 is 1895, so 1930 -> 1880 crosses it toward the zone."""
-        _, fired = self.run([1930, 1880], hold=1930)
+        """§15.4: E50 is 1947.5, so 1960 -> 1940 crosses it toward the zone."""
+        _, fired = self.run([1960, 1940], hold=1960)
         assert len(fired) == 1
         assert fired[0].classification == "True"
         assert fired[0].direction == "down"
         assert not fired[0].is_long
-        assert fired[0].level == pytest.approx(1895.0)
-        assert fired[0].level_name == MZ50
+        assert fired[0].level == pytest.approx(1947.5)
 
     def test_a_crossing_back_out_is_false(self):
-        """§6: held below MZ50, the only crossing available is the one outward."""
-        _, fired = self.run([1930], hold=1880)
+        """§6: held below E50, the only crossing available is the one outward."""
+        _, fired = self.run([1960], hold=1940)
         assert len(fired) == 1
         assert fired[0].classification == "False"
         assert fired[0].direction == "up"
 
     def test_sitting_exactly_on_the_level_is_neutral(self):
-        _, fired = self.run([1895, 1880], hold=1930)
+        _, fired = self.run([1947.5, 1940], hold=1960)
         assert fired == []
 
-    def test_the_level_is_the_one_the_run_asked_for(self):
-        """The same prices cross E50 (1947.5) but not MZ50 (1895)."""
-        _, on_mid = self.run([1960, 1940], hold=1960, level=MZ50)
-        _, on_e50 = self.run([1960, 1940], hold=1960, level=E50)
-        assert on_mid == []
-        assert len(on_e50) == 1
-        assert on_e50[0].level == pytest.approx(1947.5)
+    def test_the_level_is_e50_and_not_the_bands_midpoint(self):
+        """A move to 1940 crosses E50 (1947.5); MZ50 (1895) is untouched."""
+        _, fired = self.run([1960, 1940], hold=1960)
+        (crossing,) = fired
+        assert crossing.level == pytest.approx(crossing.zone.e50)
+        assert crossing.level != pytest.approx(crossing.zone.mz50)
 
     def test_observations_under_different_versions_do_not_pair(self):
         """§15.3 — the safeguard the whole versioning exists for."""
         tracker = CrossingTracker(zones_for, pip_size=1.0, deviation_abs=150.0)
-        prices = [1800, 1900, 2000] + [1930] * 21
-        prices += [1930] * 6          # one observation under the 2000 anchor
+        prices = [1800, 1900, 2000] + [1960] * 21
+        prices += [1960] * 6          # one observation under the 2000 anchor
         prices += [2100] * 12         # a strict extension: new anchor, new level
         fired = []
         for i, p in enumerate(prices):
@@ -220,7 +205,7 @@ class TestCrossing:
 
     def test_a_crossing_is_never_recorded_before_its_zone_existed(self):
         """§14.2."""
-        _, fired = self.run([1930, 1880], hold=1930)
+        _, fired = self.run([1960, 1940], hold=1960)
         for crossing in fired:
             assert crossing.time > crossing.zone.known_time
 
@@ -229,11 +214,12 @@ class TestCrossing:
 
 @pytest.fixture
 def desk(tmp_path):
-    """A contract whose zone is wide enough for MZ50 to be reachable.
+    """A contract whose zone leaves room between E50 and the ZigZag threshold.
 
     MM 50,000 over a pip value of 100 gives dFMZ 500 and dIMZ 550, so from a
     high at 2000: MZ0 1500, MZ50 1475, MZ100 1450, E50 1737.5. The 600-point
-    ZigZag threshold is wider than the 525 from anchor to MZ50.
+    ZigZag threshold is wider than the 262.5 from anchor to E50, so price can
+    reach the signal level before the leg flips.
     """
     contracts = tmp_path / "contracts"
     contracts.mkdir()
@@ -257,8 +243,8 @@ def bars_for(tail: list[float], hold: float = 1900.0) -> list[Bar]:
 
 
 def crossing_setup() -> list[Bar]:
-    """A downward MZ50 crossing at 1470, then price on to MZ100 at 1450."""
-    return bars_for([1900, 1470, 1470] + [1449] * 2)
+    """A downward E50 crossing at 1730, then price on to MZ100 at 1450."""
+    return bars_for([1900, 1730, 1730] + [1449] * 2)
 
 
 def run(strategy, bars, gold, config):
@@ -316,27 +302,21 @@ class TestStrategy:
             abs(trade.entry_price - trade.sl), abs=1e-6
         )
 
-    def test_the_stop_lands_on_mz0(self, desk, gold, config):
-        """A consequence of the MZ50 entry, worth pinning.
-
-        `stop = 2*entry - MZ100`, and `2*MZ50 - MZ100 == MZ0`, so a fill exactly
-        at MZ50 puts the stop exactly on MZ0. A fill `d` past MZ50 puts it `2d`
-        past MZ0 — further from the anchor, never nearer.
-        """
+    def test_the_stop_sits_just_past_the_anchor(self, desk, gold, config):
+        """`stop = 2*entry - MZ100`, and at a fill of E50 that is
+        `anchor + (dIMZ - dFMZ) / 2` — barely beyond the anchor itself."""
         strategy = MZ50Strategy(**desk)
         result = run(strategy, crossing_setup(), gold, config)
         zone = strategy.tracker.crossings[0].zone
         trade = result.trades[0]
-        drift = abs(trade.entry_price - zone.mz50)
-        assert abs(trade.sl - zone.mz0) == pytest.approx(2 * drift, abs=1e-6)
-        # Whatever the fill, the stop stays on the anchor's side of nothing:
-        # it is at least as far from the anchor as MZ0 is.
-        assert abs(trade.sl - zone.anchor_price) >= abs(zone.mz0 - zone.anchor_price)
+        drift = abs(trade.entry_price - zone.e50)
+        expected = zone.anchor_price + (zone.d_imz - zone.d_fmz) / 2
+        assert abs(trade.sl - expected) == pytest.approx(2 * drift, abs=1e-6)
 
     def test_a_signal_beyond_the_target_is_skipped(self, desk, gold, config):
         """§15.11: the crossing observation already sits past MZ100."""
         strategy = MZ50Strategy(**desk)
-        result = run(strategy, bars_for([1900, 1440, 1440]), gold, config)
+        result = run(strategy, bars_for([1900, 1449, 1449]), gold, config)
         assert result.trades == []
         assert [r["status"] for r in strategy.artifacts()["signals"]] == ["entry_beyond_target"]
 
@@ -347,10 +327,8 @@ class TestStrategy:
         case = result.artifacts["cases"][0]
         for field in ("origin_zone_id", "origin_candidate_leg_id", "initial_tp",
                       "initial_sl", "initial_risk", "exit_reason", "r_multiple",
-                      "ambiguous_tp_sl", "candidate_updates_while_open",
-                      "signal_level_name"):
+                      "ambiguous_tp_sl", "candidate_updates_while_open", "e50"):
             assert field in case
-        assert case["signal_level_name"] == MZ50
 
     def test_a_trade_keeps_its_originating_zone(self, desk, gold, config):
         """§14.5: origin_zone_id never changes as later versions appear."""
@@ -362,20 +340,10 @@ class TestStrategy:
         with pytest.raises(ValueError, match="variant must be one of"):
             run(MZ50Strategy(**desk, variant="MAYBE"), crossing_setup(), gold, config)
 
-    def test_an_unknown_signal_level_is_rejected(self, desk, gold, config):
-        with pytest.raises(ValueError, match="signal_level must be one of"):
-            run(MZ50Strategy(**desk, signal_level="mz25"), crossing_setup(), gold, config)
 
 
 class TestVariants:
-    """§9, §10 — the single intended behavioural difference.
-
-    Driven on `e50` rather than `mz50`. With an MZ50 entry the stop lands on
-    MZ0, and a strict adverse extension is by definition beyond the anchor,
-    which is further than MZ0 — so the stop always resolves first and variant B
-    can never fire. `TestMZ50MakesVariantBUnreachable` pins that separately;
-    these tests exercise the mechanism where it is reachable.
-    """
+    """§9, §10 — the single intended behavioural difference."""
 
     def adverse_setup(self) -> list[Bar]:
         """Enter short off E50 at 1737.5, then extend the originating high.
@@ -386,7 +354,7 @@ class TestVariants:
         return bars_for([1900, 1730, 1730] + [2005] * 3)
 
     def variant(self, desk, variant):
-        return MZ50Strategy(**{**desk, "signal_level": E50, "variant": variant})
+        return MZ50Strategy(**{**desk, "variant": variant})
 
     def test_keep_open_ignores_the_extension(self, desk, gold, config):
         """§15.6."""
@@ -424,24 +392,6 @@ class TestVariants:
         assert all(c["exit_reason"] != "candidate_update" for c in result.artifacts["cases"])
 
 
-class TestMZ50MakesVariantBUnreachable:
-    """The two variants cannot differ when the entry level is MZ50.
-
-    `stop = entry + (entry - MZ100)`, and at a fill of MZ50 that is exactly MZ0.
-    A strict adverse extension is beyond the anchor, which is `dFMZ` further out
-    than MZ0, so the stop is always touched first.
-    """
-
-    def test_the_two_variants_agree(self, desk, gold, config):
-        bars = bars_for([1900, 1470, 1470] + [2005] * 3)
-        a = run(MZ50Strategy(**{**desk, "variant": KEEP_OPEN}), bars, gold, config)
-        b = run(MZ50Strategy(**{**desk, "variant": CLOSE_ON_CANDIDATE_UPDATE}),
-                bars, gold, config)
-        assert [t.reason for t in a.trades] == [t.reason for t in b.trades]
-        assert [t.exit_price for t in a.trades] == [t.exit_price for t in b.trades]
-        assert all(c["exit_reason"] != "candidate_update" for c in b.artifacts["cases"])
-
-
 class TestChart:
     """The run draws the margin-zone chart from its own forward pass."""
 
@@ -466,33 +416,28 @@ class TestChart:
         assert payload["crossings"], "the crossings went missing"
         assert payload["trades"], "the orders went missing"
 
-    def test_the_title_names_the_signal_level_and_the_variant(
-        self, desk, gold, config, tmp_path
-    ):
-        """Two runs differing only in signal_level must not share a title."""
-        on_mid = self.payload(desk, gold, config, tmp_path)
-        on_e50 = self.payload({**desk, "signal_level": E50}, gold, config, tmp_path)
-        assert on_mid["strategy"] == "mz50 [MZ50 entry, KEEP_OPEN]"
-        assert on_e50["strategy"] == "mz50 [E50 entry, KEEP_OPEN]"
-        assert on_mid["signalLevel"] == MZ50 and on_e50["signalLevel"] == E50
-
-    def test_the_title_names_the_variant_too(self, desk, gold, config, tmp_path):
-        payload = self.payload(
+    def test_the_title_names_the_variant(self, desk, gold, config, tmp_path):
+        """Two runs differing only in variant must not share a title."""
+        keep = self.payload(desk, gold, config, tmp_path)
+        close = self.payload(
             {**desk, "variant": CLOSE_ON_CANDIDATE_UPDATE}, gold, config, tmp_path
         )
-        assert payload["strategy"] == "mz50 [MZ50 entry, CLOSE_ON_CANDIDATE_UPDATE]"
+        assert keep["strategy"] == "mz50 [KEEP_OPEN]"
+        assert close["strategy"] == "mz50 [CLOSE_ON_CANDIDATE_UPDATE]"
 
     def test_a_drawing_run_says_it_placed_no_orders(self, desk, gold, config, tmp_path):
         payload = self.payload({**desk, "place_orders": False}, gold, config, tmp_path)
-        assert payload["strategy"] == "mz50 [MZ50 crossings, no orders]"
+        assert payload["strategy"] == "mz50 [no orders]"
 
-    def test_the_crossings_carry_the_level_they_were_measured_against(
+    def test_the_crossings_carry_e50_not_the_bands_midpoint(
         self, desk, gold, config, tmp_path
     ):
         payload = self.payload(desk, gold, config, tmp_path)
+        assert payload["crossings"]
         for crossing in payload["crossings"]:
             zone = next(z for z in payload["zones"] if z["id"] == crossing["z"])
-            assert crossing["lvl"] == pytest.approx(zone["mid"])
+            assert crossing["e50"] == pytest.approx(zone["e50"])
+            assert crossing["e50"] != pytest.approx(zone["mid"])
 
     def test_a_zone_spans_from_when_it_became_knowable(self, desk, gold, config, tmp_path):
         """i0 is the bar that created the version, never the bar holding the anchor."""
@@ -579,5 +524,5 @@ class TestChartRenders:
             line.split(":", 1)[1].strip()
             for line in out.stdout.splitlines() if line.strip().startswith("title")
         )
-        assert title.startswith("XAUUSD H4 — mz50 [MZ50 entry, KEEP_OPEN],")
+        assert title.startswith("XAUUSD H4 — mz50 [KEEP_OPEN],")
         assert "zone versions" in title and "orders" in title

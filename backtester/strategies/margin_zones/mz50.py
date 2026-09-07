@@ -9,12 +9,12 @@ immediately; every strict extension of that candidate freezes a new immutable
 version, and a crossing counts only when both rollover observations were
 measured against the same one.
 
-Entry is a True crossing of `mz50` — the zone's own midpoint — toward the zone:
-down through it from a high (SHORT), up from a low (LONG). Target is `mz100`,
-the far boundary, and the stop mirrors that distance about the actual fill, so
-reward and risk are 1:1 against the price really paid. `e50`, at half that
-distance from the anchor, is recorded on every version too and can be traded
-instead with `signal_level: e50`.
+Entry is a True crossing of `e50` toward the zone: down through it from a high
+(SHORT), up from a low (LONG). Target is `mz100`, the far boundary, and the stop
+mirrors that distance about the actual fill, so reward and risk are 1:1 against
+the price really paid. The specification names the entry level MZ50; that is the
+50% Extremum-to-50% MZ level, `anchor +- (dFMZ + dIMZ) / 4`, which the code
+calls `e50`. The band's own midpoint is recorded as `mz50` and is not traded.
 
 `place_orders: false` runs the same pass with the trading rule switched off, so
 the run draws the components and places nothing.
@@ -39,7 +39,7 @@ from ...utils.params import StrategyParams
 from ..registry import register
 from .crossing import DEFAULT_MAX_GAP_DAYS, Crossing, CrossingTracker
 from .margins import DEFAULT_INITIAL_RATIO, MARGIN_LOG, MarginLog, compute_zones, load_spec
-from .zones import MZ50, SIGNAL_LEVELS, STRICT_EXTENSION, zone_spans
+from .zones import STRICT_EXTENSION, zone_spans
 
 KEEP_OPEN = "KEEP_OPEN"
 CLOSE_ON_CANDIDATE_UPDATE = "CLOSE_ON_CANDIDATE_UPDATE"
@@ -66,7 +66,6 @@ class MZ50Params(StrategyParams):
 
     # ------------------------------------------------------------ the trading
     place_orders: bool = False        # false = draw the components, trade nothing
-    signal_level: str = MZ50          # the level a crossing is measured against
     variant: str = KEEP_OPEN
 
 
@@ -84,10 +83,6 @@ class MZ50Strategy(Strategy):
             raise ValueError("volume must be > 0")
         if p.variant not in VARIANTS:
             raise ValueError(f"variant must be one of {list(VARIANTS)}, got {p.variant!r}")
-        if p.signal_level not in SIGNAL_LEVELS:
-            raise ValueError(
-                f"signal_level must be one of {list(SIGNAL_LEVELS)}, got {p.signal_level!r}"
-            )
 
         self._spec = load_spec(p.contract, p.contracts_dir or None)
         errors = [t for t in self._spec.problems() if t.startswith("ERROR")]
@@ -113,7 +108,6 @@ class MZ50Strategy(Strategy):
             rollover_hour=p.rollover_hour,
             rollover_tz=p.rollover_tz,
             max_gap_days=p.max_gap_days,
-            level=p.signal_level,
         )
         self._fed = 0
         self._symbol, self._timeframe = ctx.symbol, ctx.timeframe
@@ -259,8 +253,7 @@ class MZ50Strategy(Strategy):
             "backtest_variant": self.p.variant,
             "instrument": self._symbol,
             "direction": "LONG" if signal.is_long else "SHORT",
-            "signal_level_name": signal.level_name,
-            "signal_level": signal.level,
+            "e50": signal.level,
             "origin_zone_id": signal.zone.zone_id,
             "origin_candidate_leg_id": signal.zone.leg,
             "origin_candidate_version": signal.zone.version,
@@ -307,7 +300,7 @@ class MZ50Strategy(Strategy):
         ctx.log(
             f"mz50: {len(z.versions)} zone versions on {len(z.pivots)} confirmed pivots, "
             f"{len(self.tracker.points)} rollover points, {len(self.tracker.crossings)} "
-            f"{self.p.signal_level} crossings ({true_count} True)"
+            f"e50 crossings ({true_count} True)"
         )
         if z.uncovered:
             ctx.log(f"mz50: {len(z.uncovered)} candidate(s) had no margin reading and made no zone")
@@ -380,15 +373,11 @@ class MZ50Strategy(Strategy):
             confirm_at=self._confirm_at(z.candidate),
             rollover=self.tracker.points,
             crossings=self.tracker.crossings,
-            signal_level=p.signal_level,
             trades=read_trades(run_dir, self._bars),
             backtest=read_metrics(run_dir),
-            # The signal level changes what is drawn whether or not orders are
-            # placed, so it names the run either way.
             strategy=(
-                f"{self.name} [{p.signal_level.upper()} entry, {p.variant}]"
-                if p.place_orders
-                else f"{self.name} [{p.signal_level.upper()} crossings, no orders]"
+                f"{self.name} [{p.variant}]" if p.place_orders
+                else f"{self.name} [no orders]"
             ),
         )
         return write_chart(run_dir, payload)

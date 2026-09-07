@@ -28,7 +28,7 @@ them, so the package still imports in the Wine prefix where neither exists.
 ## Working here
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                    # 320 tests, ~2s
+.venv/bin/python -m pytest tests/ -q                    # 344 tests, ~2s
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 scripts/run_backtest.py --list-strategies
 ```

@@ -27,10 +27,7 @@ from .mz50 import CLOSE_ON_CANDIDATE_UPDATE, KEEP_OPEN, MZ50Params, MZ50Strategy
 from .report import build_payload, read_metrics, read_trades, render_chart, report_name, write_chart
 from .rollover import RolloverPoint, RolloverTracker
 from .zones import (
-    E50,
     INITIAL,
-    MZ50,
-    SIGNAL_LEVELS,
     STRICT_EXTENSION,
     ZONE_INPUT_CHANGE,
     ZoneTracker,
@@ -41,10 +38,10 @@ from .zones import (
 
 __all__ = [
     "CLOSE_ON_CANDIDATE_UPDATE", "CONTRACT_DIR", "ContractSpec", "Crossing",
-    "CrossingTracker", "DEFAULT_INITIAL_RATIO", "DEFAULT_MAX_GAP_DAYS", "E50",
-    "INITIAL", "KEEP_OPEN", "MARGIN_LOG", "MZ50", "MZ50Params", "MZ50Strategy",
+    "CrossingTracker", "DEFAULT_INITIAL_RATIO", "DEFAULT_MAX_GAP_DAYS",
+    "INITIAL", "KEEP_OPEN", "MARGIN_LOG", "MZ50Params", "MZ50Strategy",
     "MarginLog", "MarginObservation", "MarginZones", "RolloverPoint",
-    "RolloverTracker", "SIGNAL_LEVELS", "STRICT_EXTENSION", "ZONE_INPUT_CHANGE",
+    "RolloverTracker", "STRICT_EXTENSION", "ZONE_INPUT_CHANGE",
     "ZoneTracker", "ZoneVersion", "build_payload", "compute_zones", "list_specs",
     "load_spec", "read_metrics", "read_trades", "render_chart", "report_name",
     "save_spec", "summarise", "validate_observation", "write_chart", "zone_spans",

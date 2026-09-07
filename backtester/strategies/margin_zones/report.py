@@ -52,7 +52,6 @@ def build_payload(
     confirm_at: float | None = None,
     rollover: list[RolloverPoint] = (),
     crossings: list[Crossing] = (),
-    signal_level: str = "mz50",
     trades: list[dict] = (),
     backtest: dict | None = None,
     strategy: str = "",
@@ -121,7 +120,7 @@ def build_payload(
             {
                 "z": c.zone.zone_id,
                 "t": int(c.time.timestamp()), "p": round(c.current.price, 6),
-                "day": c.current.day.isoformat(), "lvl": round(c.level, 6),
+                "day": c.current.day.isoformat(), "e50": round(c.level, 6),
                 "dir": c.direction, "cls": c.classification,
                 "prevT": int(c.previous.roll_time.timestamp()),
                 "prevP": round(c.previous.price, 6),
@@ -136,7 +135,6 @@ def build_payload(
             "bars": max(0, len(bars) - 1 - candidate.index),
         },
         "strategy": strategy or None,
-        "signalLevel": signal_level,
         "trades": list(trades),
         "backtest": backtest or None,
         "stats": stats,
@@ -193,7 +191,6 @@ def write_chart(directory: Path, payload: dict, summary_name: str = "zones.json"
         "candidate": payload["cand"],
         "rollover": {"points": len(payload["rollover"])},
         "crossings": {
-            "level": payload["signalLevel"],
             "count": len(payload["crossings"]),
             "true": sum(1 for c in payload["crossings"] if c["cls"] == "True"),
             "false": sum(1 for c in payload["crossings"] if c["cls"] == "False"),

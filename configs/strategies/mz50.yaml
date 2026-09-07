@@ -1,4 +1,4 @@
-# Provisional ZigZag candidate -> MZ50 crossing -> MZ100.
+# Provisional ZigZag candidate -> E50 crossing -> MZ100.
 #
 #   scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 #
@@ -6,8 +6,10 @@
 # hangs off the provisional ZigZag candidate, so it is knowable immediately;
 # every strict extension freezes a new version, and a crossing counts only when
 # both rollover observations were measured against the same one. Entry is a
-# True crossing of MZ50 toward the zone, target MZ100, stop mirrored about the
-# fill. `place_orders: false` runs the same pass with the trading rule off.
+# True crossing of E50 toward the zone, target MZ100, stop mirrored about the
+# fill. The specification names that entry level MZ50; it is the 50%
+# Extremum-to-50% MZ level, anchor +- (dFMZ+dIMZ)/4. `place_orders: false` runs
+# the same pass with the trading rule off.
 
 strategy: mz50
 symbol: EURUSD
@@ -36,14 +38,6 @@ params:
 
   # --- the trading -------------------------------------------------------
   place_orders: true       # false = draw the support components, trade nothing
-  signal_level: e50       # which level a crossing must cross to signal.
-                           # mz50 — the zone's midpoint, anchor +- (dFMZ+dIMZ)/2
-                           # — is the specification's entry. e50 sits at half
-                           # that distance from the anchor: crossed far more
-                           # often (167 against 16 here) and risking roughly
-                           # 20x as much per trade, since the stop mirrors the
-                           # distance to MZ100. Both levels are recorded on
-                           # every zone version whichever one is traded.
   variant: KEEP_OPEN       # or CLOSE_ON_CANDIDATE_UPDATE. The only difference is
                            # whether a later strict extension of the originating
                            # candidate closes an open trade.

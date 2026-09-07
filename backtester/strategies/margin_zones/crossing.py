@@ -1,15 +1,13 @@
-"""Rollover crossings of a zone's signal level.
+"""Rollover crossings of a zone's E50 level.
 
-Two consecutive rollover observations sitting strictly either side of the
-level, both measured against the *same* immutable zone version. That last
-clause is the safeguard: the anchor moves, so without it a level sliding under
-a static price would register as a crossing price never made. When a new
-version appears the baseline is dropped.
+Two consecutive rollover observations sitting strictly either side of `e50`,
+both measured against the *same* immutable zone version. That last clause is
+the safeguard: the anchor moves, so without it a level sliding under a static
+price would register as a crossing price never made. When a new version appears
+the baseline is dropped.
 
-The level is named per run — `mz50`, the zone's midpoint, or `e50`, half as far
-from the anchor. A crossing *toward* the zone (down through the level from a
-high, up from a low) is classified True; the crossing back out toward the
-anchor is False.
+A crossing *toward* the zone — down through the level from a high, up from a
+low — is classified True; the crossing back out toward the anchor is False.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from datetime import datetime
 
 from ...core.types import Bar
 from .rollover import RolloverPoint, RolloverTracker
-from .zones import MZ50, SIGNAL_LEVELS, ZoneTracker, ZoneVersion
+from .zones import ZoneTracker, ZoneVersion
 
 #: Continuity limit in calendar days. A weekend collapses into one skipped day,
 #: so consecutive points routinely span 2-3 days; wider than this is a hole in
@@ -35,12 +33,11 @@ class Crossing:
     previous: RolloverPoint
     current: RolloverPoint
     index: int              # bar on which the pair completed
-    level_name: str         # which of the zone's levels was crossed
 
     @property
     def level(self) -> float:
         """The price the pair straddled."""
-        return self.zone.level(self.level_name)
+        return self.zone.e50
 
     def stop_for(self, entry: float) -> float:
         """The stop that mirrors the target distance about the price paid.
@@ -87,10 +84,8 @@ class Crossing:
             "day": self.current.day.isoformat(),
             "price": self.current.price,
             "crossing_time": self.time.isoformat(),
-            "level_name": self.level_name,
-            "level": self.level,
+            "e50": self.level,
             "mz50": self.zone.mz50,
-            "e50": self.zone.e50,
             "mz100": self.zone.mz100,
             "direction": self.direction,
             "classification": self.classification,
@@ -107,8 +102,7 @@ class Crossing:
             "current_observation_time": self.current.roll_time.isoformat(),
             "current_observation_price": self.current.price,
             "signal_time": self.time.isoformat(),
-            "level_name": self.level_name,
-            "level": self.level,
+            "e50": self.level,
             "mz100": self.zone.mz100,
             "status": status,
         }
@@ -130,11 +124,7 @@ class CrossingTracker:
         rollover_hour: int = 0,
         rollover_tz: str = "UTC",
         max_gap_days: int = DEFAULT_MAX_GAP_DAYS,
-        level: str = MZ50,
     ):
-        if level not in SIGNAL_LEVELS:
-            raise ValueError(f"level must be one of {list(SIGNAL_LEVELS)}, got {level!r}")
-        self.level = level
         self.zones = ZoneTracker(zones_for, pip_size, deviation_pct, deviation_abs)
         self.rollover = RolloverTracker(rollover_hour, rollover_tz)
         self._max_gap = max(0, int(max_gap_days))
@@ -192,12 +182,11 @@ class CrossingTracker:
         if point.roll_time <= zone.known_time:
             return None
 
-        level = zone.level(self.level)
+        level = zone.e50
         before = self._prev.price - level
         after = point.price - level
         # Strictly opposite sides; sitting exactly on the level is neutral.
         if before * after >= 0:
             return None
 
-        return Crossing(zone=zone, previous=self._prev, current=point,
-                        index=index, level_name=self.level)
+        return Crossing(zone=zone, previous=self._prev, current=point, index=index)

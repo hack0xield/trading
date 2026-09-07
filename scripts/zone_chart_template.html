@@ -107,14 +107,14 @@
   </details>
 
   <details id="crossingsSection">
-    <summary>Rollover crossings — every True/False crossing of the signal level</summary>
+    <summary>Rollover crossings — every True/False crossing of the 50% Ext-MZ level</summary>
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
             <th>#</th><th>Zone</th><th>Kind</th><th>Anchor</th>
             <th>Prev rollover</th><th>This rollover</th>
-            <th id="lvlHead">Level</th><th>Direction</th><th>Result</th>
+            <th>50% Ext-MZ</th><th>Direction</th><th>Result</th>
           </tr>
         </thead>
         <tbody id="ctbody"></tbody>
@@ -150,9 +150,6 @@ const ZONES = DATA.zones || [];
 const TRADES = DATA.trades || [];
 const ROLL = DATA.rollover || [];
 const CROSS = DATA.crossings || [];
-// The level a crossing was measured against: "mz50" is the zone midpoint,
-// "e50" the level half as far from the anchor.
-const LVL = DATA.signalLevel === "e50" ? "50% Ext-MZ" : "50% MZ";
 const state = {
   px: 4, filter: "both", scale: "fit",
   roll: ROLL.length > 0,
@@ -256,8 +253,7 @@ $("title").textContent = DATA.strategy
 $("subtitle").innerHTML = "";
 $("subtitle").append(
   `${day(DATA.times[0])} to ${day(DATA.times[N - 1])} · `,
-  `signal level ${LVL} · ZigZag deviation ${DATA.deviation} · `,
-  `margin from ${DATA.contract} `,
+  `ZigZag deviation ${DATA.deviation} · margin from ${DATA.contract} `,
   `(pip value ${DATA.pipValue.toFixed(2)} = PP ${DATA.tickValue} x NP ${DATA.np}) · `,
 );
 const codeEl = document.createElement("code");
@@ -328,12 +324,12 @@ for (const [color, glyph, text] of [
   ["var(--win)", "●", "Low candidate — zone above it: 0% MZ, 100% MZ"],
   ["var(--loss)", "●", "High candidate — zone below it, same boundaries"],
   ["var(--muted)", "", "Dotted staircase = the anchor, i.e. the candidate as it moved"],
-  ["var(--muted)", "", `Dashed hairline inside a zone = 50% MZ, its midpoint${DATA.signalLevel === "mz50" ? " — the signal level" : ""}`],
-  ["var(--muted)", "", `Solid hairline nearer the anchor = 50% Extremum-to-50% MZ level${DATA.signalLevel === "e50" ? " — the signal level" : ""}`],
+  ["var(--muted)", "", "Dashed hairline inside a zone = 50% MZ, its midpoint"],
+  ["var(--muted)", "", "Solid hairline nearer the anchor = 50% Ext-MZ — the signal level"],
   ...(ROLL.length ? [["var(--text-primary)", "●",
     "Daily CFD rollover point — last price before the scheduled trading break"]] : []),
   ...(CROSS.length ? [
-    ["var(--win)", "◎", `True crossing — rollover moved through the ${LVL} level toward the zone`],
+    ["var(--win)", "◎", "True crossing — rollover moved through 50% Ext-MZ toward the zone"],
     ["var(--loss)", "◎", "False crossing — rollover moved through it away from the zone"],
   ] : []),
   ...(TRADES.length ? [
@@ -442,17 +438,14 @@ function draw() {
                                stroke: c, "stroke-width": 1.5, "stroke-opacity": 0.95 }));
       plot.append(el("line", { x1: x0, y1: y1, x2: x1, y2: y1,
                                stroke: c, "stroke-width": 1, "stroke-opacity": 0.6 }));
-      // The two named levels. Whichever the run traded is drawn heavier, so
-      // the signal level is the one that reads at a glance.
-      const onMid = DATA.signalLevel === "mz50";
+      // The band's midpoint, and the signal level outside it nearer the
+      // anchor. The signal level is drawn heavier so it reads at a glance.
       const yM = y(z.mid), yE = y(z.e50);
       plot.append(el("line", { x1: x0, y1: yM, x2: x1, y2: yM, stroke: c,
-                               "stroke-width": onMid ? 1.5 : 1,
-                               "stroke-opacity": onMid ? 0.9 : 0.45,
+                               "stroke-width": 1, "stroke-opacity": 0.45,
                                "stroke-dasharray": "3 3" }));
       plot.append(el("line", { x1: x0, y1: yE, x2: x1, y2: yE, stroke: c,
-                               "stroke-width": onMid ? 1 : 1.5,
-                               "stroke-opacity": onMid ? 0.4 : 0.9 }));
+                               "stroke-width": 1.5, "stroke-opacity": 0.9 }));
       // The anchor itself: the candidate price this version was built on.
       const yA = y(z.anch);
       plot.append(el("line", { x1: x0, y1: yA, x2: x1, y2: yA,
@@ -520,7 +513,7 @@ function draw() {
       ring.append(el("title", {}));
       ring.lastChild.textContent =
         `${c.cls} crossing (${c.dir}) — rollover ${dt(c.prevT)} ${px_(c.prevP)} -> ` +
-        `${c.day} ${px_(c.p)}, ${LVL} level ${px_(c.lvl)} of zone ${c.z}`;
+        `${c.day} ${px_(c.p)}, 50% Ext-MZ ${px_(c.e50)} of zone ${c.z}`;
       plot.append(ring);
     }
   }
@@ -647,7 +640,6 @@ fill("ptbody", DATA.pivots.map((p, k) => [
   [`+${p.ci - p.i} bars`, ""],
 ]));
 
-$("lvlHead").textContent = LVL;
 $("crossingsSection").hidden = CROSS.length === 0;
 fill("ctbody", CROSS.map((c, k) => [
   [String(k + 1), ""],
@@ -656,7 +648,7 @@ fill("ctbody", CROSS.map((c, k) => [
   [px_(c.anch), ""],
   [`${c.prevDay}  ${px_(c.prevP)}`, ""],
   [`${c.day}  ${px_(c.p)}`, ""],
-  [px_(c.lvl), ""],
+  [px_(c.e50), ""],
   [c.dir, ""],
   [c.cls, c.cls === "True" ? "up" : "down"],
 ]));
@@ -747,7 +739,7 @@ function readout(i) {
     box.append(group("Rollover crossing", [
       [cross.cls === "True" ? "var(--win)" : "var(--loss)",
        `${cross.cls} (${cross.dir})`, `zone ${cross.z}`],
-      [null, px_(cross.lvl), `${LVL} level`],
+      [null, px_(cross.e50), "50% Ext-MZ level"],
       [null, `${px_(cross.prevP)} → ${px_(cross.p)}`, `${cross.prevDay} → ${cross.day}`],
     ]));
   }
