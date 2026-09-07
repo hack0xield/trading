@@ -40,13 +40,8 @@ class Crossing:
         return self.zone.e50
 
     def stop_for(self, entry: float) -> float:
-        """The stop that mirrors the target distance about the price paid.
-
-        Measured from the fill rather than from the signal, so reward and risk
-        are 1:1 against what was really risked whatever the open gapped to.
-        """
-        risk = abs(entry - self.zone.mz100)
-        return entry - risk if self.is_long else entry + risk
+        """The originating zone's stop, measured from the price actually paid."""
+        return self.zone.stop_for(entry)
 
     @property
     def toward_zone(self) -> bool:

@@ -2,7 +2,8 @@
 #
 #   scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 #
-# Specification: impl-spec/[1 Sep5]E50_NearTP_OriginalSL_TwoCloseExit_Spec.md.
+# Specification: impl-spec/[1 Sep5]E50_NearTP_OriginalSL_TwoCloseExit_Spec.md,
+# and its §14 chain in [2 Sep5]...+TrendFollowLogic.md behind `trend_follow`.
 # The zone hangs off the provisional ZigZag candidate, so it is knowable
 # immediately; every strict extension freezes a new version, and a crossing
 # counts only when both daily observations were measured against the same one.
@@ -46,6 +47,15 @@ params:
                            # fills at the next open. A close on the zone side,
                            # exactly on e50, or a break in the daily sequence
                            # clears the warning.
+  trend_follow: false      # after every take-profit, open a follow-on zone
+                           # anchored on that trade's own e50, in the same
+                           # direction and inheriting its zone distances. If
+                           # price already sits between the new e50 and the new
+                           # near boundary a limit order rests at the e50;
+                           # otherwise the step waits for a daily crossing of
+                           # it. A stop, an early exit or the end of the data
+                           # ends the chain, and a fresh ZigZag signal
+                           # supersedes a step still waiting.
   variant: KEEP_OPEN       # the specification's runs are all KEEP_OPEN.
                            # CLOSE_ON_CANDIDATE_UPDATE additionally closes when
                            # the originating candidate extends against the trade.
@@ -54,6 +64,7 @@ params:
 #   A  -p take_profit=mz100 -p two_close_exit=false
 #   B  -p take_profit=mz0   -p two_close_exit=false
 #   C  as configured below
+#   D  -p trend_follow=true            (spec 2 — the follow-on chain)
 
 execution:
   initial_balance: 100000

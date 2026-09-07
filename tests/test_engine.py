@@ -9,7 +9,7 @@ from backtester.core.engine import Backtester, EngineConfig
 from backtester.core.strategy import Strategy
 from backtester.core.types import Bar, ExitReason
 from backtester.utils.params import StrategyParams
-from conftest import series
+from conftest import bar, series
 
 
 def run(strategy, bars, gold, config, **engine_kwargs):
@@ -171,3 +171,112 @@ class TestResult:
         result = run(BuyOnOpen(), series([1800.0, 1810.0]), gold, config)
         realised = sum(t.net_pnl for t in result.trades)
         assert result.final_balance == pytest.approx(result.initial_balance + realised)
+
+
+class TestLimitOrders:
+    """A resting order fills at its own level, never worse."""
+
+    def strategy(self, side: str, limit: float, **kw):
+        class PlaceLimit(Strategy):
+            name = "test_limit"
+            params_class = StrategyParams
+
+            def on_start(self, ctx):
+                self.placed = False
+
+            def on_bar(self, ctx: Context, bar: Bar):
+                if not self.placed:
+                    ctx.order(side, 0.1, limit=limit, **kw)
+                    self.placed = True
+
+        return PlaceLimit()
+
+    def test_it_rests_until_the_market_reaches_it(self, gold, config):
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0)]
+        result = run(self.strategy("BUY", 1700.0), bars, gold, config)
+        assert result.trades == []
+
+    def test_a_buy_fills_at_the_limit_when_the_bar_trades_through(self, gold, config):
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0, low=1650.0, close=1800.0)]
+        result = run(self.strategy("BUY", 1700.0), bars, gold, config)
+        (trade,) = result.trades
+        assert trade.entry_price == pytest.approx(1700.0)
+        assert trade.entry_time == bars[2].time
+
+    def test_a_sell_fills_at_the_limit_when_the_bar_trades_through(self, gold, config):
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0, high=1950.0, close=1800.0)]
+        result = run(self.strategy("SELL", 1900.0), bars, gold, config)
+        (trade,) = result.trades
+        assert trade.entry_price == pytest.approx(1900.0)
+
+    def test_a_bar_that_stops_short_does_not_fill_it(self, gold, config):
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0, low=1701.0, close=1800.0)]
+        result = run(self.strategy("BUY", 1700.0), bars, gold, config)
+        assert result.trades == []
+
+    def test_an_open_already_through_the_limit_fills_there_instead(self, gold, config):
+        """Better than the level asked for, which is what a real fill does."""
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1650.0)]
+        result = run(self.strategy("BUY", 1700.0), bars, gold, config)
+        (trade,) = result.trades
+        assert trade.entry_price == pytest.approx(1650.0)
+
+    def test_the_bracket_starts_on_the_next_bar(self, gold, config):
+        """The path after an intrabar fill is unknown, so the same bar's range
+        cannot resolve the position it just opened."""
+        bars = [
+            bar(0, 1800.0), bar(1, 1800.0),
+            bar(2, 1800.0, low=1650.0, high=1800.0, close=1800.0),  # fills at 1700
+            bar(3, 1800.0, low=1600.0, high=1800.0, close=1800.0),  # takes the stop
+        ]
+        result = run(self.strategy("BUY", 1700.0, sl=1650.0), bars, gold, config)
+        (trade,) = result.trades
+        assert trade.reason is ExitReason.STOP_LOSS
+        assert trade.exit_time == bars[3].time
+
+    def test_cancelling_removes_it(self, gold, config):
+        class PlaceThenCancel(Strategy):
+            name = "test_limit_cancel"
+            params_class = StrategyParams
+
+            def on_bar(self, ctx: Context, bar: Bar):
+                if len(ctx.history) == 1:
+                    ctx.order("BUY", 0.1, limit=1700.0)
+                if len(ctx.history) == 2:
+                    assert ctx.cancel_pending() == 1
+
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0, low=1650.0, close=1800.0)]
+        assert run(PlaceThenCancel(), bars, gold, config).trades == []
+
+    def test_a_market_order_beside_it_still_fills_at_the_open(self, gold, config):
+        class Both(Strategy):
+            name = "test_limit_and_market"
+            params_class = StrategyParams
+
+            def on_bar(self, ctx: Context, bar: Bar):
+                if len(ctx.history) == 1:
+                    ctx.order("BUY", 0.1, limit=1700.0)
+                    ctx.order("SELL", 0.1)
+
+        bars = [bar(0, 1800.0), bar(1, 1850.0), bar(2, 1800.0)]
+        result = run(Both(), bars, gold, config)
+        assert [t.side.value for t in result.trades] == ["SELL"]
+        assert result.trades[0].entry_price == pytest.approx(1850.0)
+
+    def test_an_invalidation_level_voids_it(self, gold, config):
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0, low=1550.0, close=1800.0)]
+        result = run(self.strategy("BUY", 1700.0, cancel_at=1900.0), bars, gold, config)
+        assert result.trades and result.trades[0].entry_price == pytest.approx(1700.0)
+
+        # The same bar reaching the invalidation instead
+        bars = [bar(0, 1800.0), bar(1, 1800.0), bar(2, 1800.0, high=1950.0, close=1800.0)]
+        assert run(self.strategy("BUY", 1700.0, cancel_at=1900.0), bars, gold, config).trades == []
+
+    def test_a_bar_reaching_both_resolves_as_the_cancellation(self, gold, config):
+        """The intrabar path is unknown, so the conservative reading wins."""
+        bars = [
+            bar(0, 1800.0), bar(1, 1800.0),
+            bar(2, 1800.0, low=1650.0, high=1950.0, close=1800.0),
+        ]
+        result = run(self.strategy("BUY", 1700.0, cancel_at=1900.0), bars, gold, config)
+        assert result.trades == []

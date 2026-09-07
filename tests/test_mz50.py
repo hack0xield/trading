@@ -660,3 +660,148 @@ class TestChartRenders:
         assert title.startswith("XAUUSD H4 — mz50 [TP mz0, two-close exit, KEEP_OPEN],")
         assert "zone versions" in title and "orders" in title
 
+
+
+class TestChain:
+    """§14 — continuing from a take-profit, anchored on that trade's own E50.
+
+    The parent is a SHORT off the 2000 anchor: E50 1737.5, MZ0 1500, MZ100 1450.
+    Its child therefore anchors at 1737.5 with the same inherited distances:
+    MZ0 1237.5, MZ50 1212.5, MZ100 1187.5, E50 1475.
+    """
+
+    PARENT = [1900, 1730, 1730]
+
+    def chain(self, desk, gold, config, tail, extra=(), **params):
+        strategy = MZ50Strategy(**{**desk, "trend_follow": True, **params})
+        bars = bars_for(self.PARENT + tail) + list(extra)
+        result = run(strategy, bars, gold, config)
+        return strategy, result
+
+    def wicks(self, after: int, price: float, high: float, count: int = 12) -> list[Bar]:
+        """Bars that open away from `high` but reach it, so a limit fills at its
+        own level rather than at a better open."""
+        return [
+            Bar(time=START + timedelta(hours=4 * (after + k)), open=price, high=high,
+                low=price, close=price, volume=100, spread=0.0)
+            for k in range(count)
+        ]
+
+    def events(self, strategy):
+        return [r["event"] for r in strategy.artifacts().get("chain", [])]
+
+    # ------------------------------------------------------------- creation
+
+    def test_a_take_profit_creates_one_child_from_the_parents_e50(
+        self, desk, gold, config
+    ):
+        """§14.7.1: the anchor is origin_E50, not the TP or the exit price."""
+        strategy, result = self.chain(desk, gold, config, [1499, 1499])
+        (row,) = [r for r in strategy.artifacts()["chain"] if r["event"].startswith("created")]
+        parent = result.artifacts["cases"][0]
+        assert parent["exit_reason"] == "take_profit"
+        assert row["anchor_price"] == pytest.approx(float(parent["e50"]))
+        assert row["anchor_price"] != pytest.approx(float(parent["exit_price"]))
+        assert row["chain_depth"] == 1
+
+    def test_the_child_inherits_direction_and_distances(self, desk, gold, config):
+        """§14.7.2: levels recomputed from the new anchor, distances frozen."""
+        strategy, result = self.chain(desk, gold, config, [1499, 1499])
+        (row,) = [r for r in strategy.artifacts()["chain"] if r["event"].startswith("created")]
+        parent = result.artifacts["cases"][0]
+        d_fmz = float(parent["origin_anchor_price"]) - float(parent["origin_mz0"])
+        d_imz = float(parent["origin_anchor_price"]) - float(parent["origin_mz100"])
+        assert row["direction"] == parent["direction"]
+        assert row["anchor_price"] - row["mz0"] == pytest.approx(d_fmz)
+        assert row["anchor_price"] - row["mz100"] == pytest.approx(d_imz)
+        mz50 = (row["mz0"] + row["mz100"]) / 2
+        assert row["e50"] == pytest.approx((row["anchor_price"] + mz50) / 2)
+
+    def test_nothing_is_created_without_the_flag(self, desk, gold, config):
+        strategy, result = self.chain(desk, gold, config, [1499, 1499], trend_follow=False)
+        assert "chain" not in strategy.artifacts()
+        assert all(c["zone_source"] == "zigzag" for c in result.artifacts["cases"])
+
+    def test_a_stop_loss_starts_no_chain(self, desk, gold, config):
+        """§14.7.4: only a take-profit continues."""
+        strategy, result = self.chain(desk, gold, config, [2100, 2100])
+        assert result.artifacts["cases"][0]["exit_reason"] != "take_profit"
+        assert not [e for e in self.events(strategy) if e.startswith("created")]
+
+    def test_an_early_exit_starts_no_chain(self, desk, gold, config):
+        """§14.7.4: a profitable two-close exit is still not a take-profit."""
+        strategy, result = self.chain(desk, gold, config, [1800, 1800, 1800])
+        assert result.artifacts["cases"][0]["exit_reason"] == "e50_two_close_return"
+        assert not [e for e in self.events(strategy) if e.startswith("created")]
+
+    # ---------------------------------------------------------- entry modes
+
+    def test_price_on_the_anchor_side_waits_for_a_daily_cross(self, desk, gold, config):
+        """§14.2 row 2: 1499 is above the child's E50 of 1475."""
+        strategy, _ = self.chain(desk, gold, config, [1499, 1499])
+        assert "created_chain_daily_cross" in self.events(strategy)
+
+    def test_price_inside_the_band_rests_a_limit_at_e50(self, desk, gold, config):
+        """§14.2 row 1: 1400 sits between the child's MZ0 and its E50."""
+        strategy, _ = self.chain(desk, gold, config, [1400, 1400])
+        assert "created_chain_limit_retest" in self.events(strategy)
+
+    def test_price_already_at_the_child_target_ends_the_branch(self, desk, gold, config):
+        """§14.2 row 3: 1200 is past the child's MZ0 of 1237.5."""
+        strategy, _ = self.chain(desk, gold, config, [1200, 1200])
+        assert "chain_target_already_reached" in self.events(strategy)
+        assert not [e for e in self.events(strategy) if e.startswith("created")]
+
+    # --------------------------------------------------------- limit entries
+
+    def test_the_limit_fills_on_a_retest_of_the_child_e50(self, desk, gold, config):
+        """§14.3, and §14.7.8: the child then trades its own levels."""
+        base = len(bars_for(self.PARENT + [1400]))
+        strategy, result = self.chain(
+            desk, gold, config, [1400], extra=self.wicks(base, 1400.0, 1480.0)
+        )
+        assert "limit_filled" in self.events(strategy)
+        child = [c for c in result.artifacts["cases"] if c["zone_source"] == "chain"]
+        assert len(child) == 1
+        case = child[0]
+        assert case["entry_mode"] == "chain_limit_retest"
+        assert float(case["entry_price"]) == pytest.approx(1475.0)
+        assert float(case["initial_tp"]) == pytest.approx(1237.5)     # the child's MZ0
+        assert float(case["initial_sl"]) == pytest.approx(2 * 1475.0 - 1187.5)
+        assert case["chain_depth"] == 1
+
+    def test_the_child_target_before_a_fill_voids_the_order(self, desk, gold, config):
+        """§14.3: reaching MZ0 first cancels the branch without a trade."""
+        strategy, result = self.chain(desk, gold, config, [1400, 1200, 1200])
+        assert "chain_target_reached_without_entry" in self.events(strategy)
+        assert "limit_filled" not in self.events(strategy)
+        assert all(c["zone_source"] == "zigzag" for c in result.artifacts["cases"])
+
+    def test_the_limit_never_fills_before_it_was_placed(self, desk, gold, config):
+        """The parent's own TP bar dipped through the child's E50; it must not count."""
+        strategy, result = self.chain(desk, gold, config, [1400, 1400])
+        chain_cases = [c for c in result.artifacts["cases"] if c["zone_source"] == "chain"]
+        assert chain_cases == []
+
+    # ---------------------------------------------------------- arbitration
+
+    def test_an_ordinary_signal_supersedes_a_pending_step(self, desk, gold, config):
+        """§14.4.3: a fresh admissible ZigZag signal cancels the waiting child.
+
+        2050 extends the candidate into a new zone version whose E50 is 1787.5,
+        and 2050 -> 1780 crosses it while the child is still waiting on 1475.
+        """
+        strategy, result = self.chain(desk, gold, config, [1499, 2050, 2050, 1780, 1780])
+        events = self.events(strategy)
+        assert events.index("superseded_by_zigzag_signal") > events.index(
+            "created_chain_daily_cross"
+        )
+        assert all(c["zone_source"] == "zigzag" for c in result.artifacts["cases"])
+        assert len(result.artifacts["cases"]) == 2
+
+    def test_the_end_of_data_cancels_a_resting_order(self, desk, gold, config):
+        """§14.7.11: cancelled, never turned into a trade."""
+        strategy, result = self.chain(desk, gold, config, [1400, 1400])
+        assert "end_of_data_cancel" in self.events(strategy)
+        assert all(c["zone_source"] == "zigzag" for c in result.artifacts["cases"])
+

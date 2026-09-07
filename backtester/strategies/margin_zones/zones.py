@@ -21,6 +21,11 @@ from .margins import MarginZones
 INITIAL = "initial"
 STRICT_EXTENSION = "strict_extension"
 ZONE_INPUT_CHANGE = "zone_input_change"
+TP_CHAIN = "tp_chain"
+
+#: Where a zone's anchor came from.
+ZIGZAG = "zigzag"
+CHAIN = "chain"
 
 ZonesFor = Callable[[Candidate], Optional[MarginZones]]
 
@@ -45,6 +50,13 @@ class ZoneVersion:
     zones: MarginZones          # the margin reading behind the distances
     pip_size: float
     event_type: str
+
+    # Set only on a zone continuing a chain after a take-profit.
+    source: str = ZIGZAG
+    chain_id: int | None = None
+    chain_depth: int = 0
+    parent_trade_id: int | None = None
+    parent_zone_id: int | None = None
 
     # ------------------------------------------------------------- geometry
 
@@ -96,6 +108,14 @@ class ZoneVersion:
     def hi(self) -> float:
         return max(self.mz0, self.mz100)
 
+    def stop_for(self, entry: float) -> float:
+        """The stop that mirrors the distance to the far boundary about the fill.
+
+        `2 * entry - mz100`, so it is measured from the price actually paid.
+        """
+        risk = abs(entry - self.mz100)
+        return entry - risk if self.direction > 0 else entry + risk
+
     def beyond(self, price: float, level: float) -> bool:
         """Has price reached or passed `level`, travelling the zone's own way?"""
         return price <= level if self.direction < 0 else price >= level
@@ -118,6 +138,11 @@ class ZoneVersion:
             "maintenance": self.zones.maintenance,
             "margin_as_of": self.zones.as_of.isoformat(),
             "event_type": self.event_type,
+            "zone_source": self.source,
+            "chain_id": self.chain_id if self.chain_id is not None else "",
+            "chain_depth": self.chain_depth,
+            "parent_trade_id": self.parent_trade_id if self.parent_trade_id is not None else "",
+            "parent_zone_id": self.parent_zone_id if self.parent_zone_id is not None else "",
             "superseded_time": until_time.isoformat() if until_time else "",
         }
 
@@ -159,6 +184,11 @@ class ZoneTracker:
     @property
     def candidate(self) -> Candidate | None:
         return self._candidate
+
+    def reserve_id(self) -> int:
+        """Take the next zone id, for a zone built outside this tracker."""
+        self._next_id += 1
+        return self._next_id - 1
 
     def push(self, bar: Bar) -> ZoneVersion | None:
         """Feed the next closed bar; return the zone version it created, if any.

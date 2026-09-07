@@ -31,6 +31,7 @@ Two variants (§9, §10) run over identical data, versions and signals:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from ...core.context import BarOpen, Context
 from ...core.strategy import Strategy
@@ -40,7 +41,7 @@ from ..registry import register
 from .crossing import DEFAULT_MAX_GAP_DAYS, Crossing, CrossingTracker
 from .margins import DEFAULT_INITIAL_RATIO, MARGIN_LOG, MarginLog, compute_zones, load_spec
 from .rollover import RolloverPoint
-from .zones import STRICT_EXTENSION, ZoneVersion, zone_spans
+from .zones import CHAIN, STRICT_EXTENSION, TP_CHAIN, ZoneVersion, zone_spans
 
 KEEP_OPEN = "KEEP_OPEN"
 CLOSE_ON_CANDIDATE_UPDATE = "CLOSE_ON_CANDIDATE_UPDATE"
@@ -54,6 +55,62 @@ TAKE_PROFITS = (NEAR, FAR)
 #: Reasons a scheduled market exit was raised.
 TWO_CLOSE_RETURN = "e50_two_close_return"
 CANDIDATE_UPDATE = "candidate_update"
+
+#: How a chain step waits for its entry (§14.2).
+LIMIT_RETEST = "chain_limit_retest"
+DAILY_CROSS = "chain_daily_cross"
+ZIGZAG_DAILY_CROSS = "zigzag_daily_cross"
+
+
+@dataclass(frozen=True, slots=True)
+class ChainEntry:
+    """A step of the take-profit chain, standing in for a crossing signal.
+
+    Carries the same surface a `Crossing` does, so the entry, the stop, the
+    two-close watch and the trade record treat both the same way.
+    """
+
+    zone: ZoneVersion
+    time: datetime
+    mode: str
+
+    @property
+    def is_long(self) -> bool:
+        return self.zone.direction > 0
+
+    @property
+    def level(self) -> float:
+        return self.zone.e50
+
+    def stop_for(self, entry: float) -> float:
+        return self.zone.stop_for(entry)
+
+    def as_signal_row(self, status: str) -> dict:
+        return {
+            "zone_id": self.zone.zone_id,
+            "candidate_leg_id": "",
+            "candidate_version": self.zone.chain_depth,
+            "direction": "LONG" if self.is_long else "SHORT",
+            "previous_observation_time": "",
+            "previous_observation_price": "",
+            "current_observation_time": self.time.isoformat(),
+            "current_observation_price": "",
+            "signal_time": self.time.isoformat(),
+            "e50": self.level,
+            "mz100": self.zone.mz100,
+            "status": status,
+        }
+
+
+@dataclass(slots=True)
+class ChainStep:
+    """A child zone waiting for its entry, and how it is waiting."""
+
+    zone: ZoneVersion
+    mode: str
+    known_index: int
+    known_time: datetime
+    prev_close: RolloverPoint | None = None
 
 
 @dataclass
@@ -78,6 +135,7 @@ class MZ50Params(StrategyParams):
     place_orders: bool = False        # false = draw the components, trade nothing
     take_profit: str = NEAR           # which boundary the trade aims at
     two_close_exit: bool = True       # leave on two adverse daily closes past e50
+    trend_follow: bool = False        # continue the chain after every take-profit
     variant: str = KEEP_OPEN
 
 
@@ -146,6 +204,10 @@ class MZ50Strategy(Strategy):
         self._confirming: RolloverPoint | None = None
         self._warning_count = 0
         self._warning_resets = 0
+        self._chain: ChainStep | None = None        # a child zone awaiting entry
+        self._chain_zones: list[tuple[ZoneVersion, int, int | None]] = []
+        self._chain_rows: list[dict] = []
+        self._next_chain_id = 1
 
     def _zones_for(self, candidate):
         """Margin as it stood on the candidate's own date."""
@@ -208,9 +270,16 @@ class MZ50Strategy(Strategy):
             for close in closes:
                 self._watch(ctx, close)
 
+            # §14.4.5: a limit that already filled wins by time, so it settles
+            # first; an unfilled chain signal yields to an ordinary one, so the
+            # chain's own daily pairing runs after the crossings.
+            self._settle_chain_limit(ctx, pending)
+
             for crossing in crossings:
                 if crossing.index == index:
                     self._act_on(ctx, crossing)
+
+            self._chain_daily(ctx, pending, closes)
 
             # A new version on this bar. If it strictly extends the leg the open
             # trade came from, variant B schedules the exit (§10).
@@ -265,6 +334,13 @@ class MZ50Strategy(Strategy):
         signal = self._open_signal
         self._warning_rows.append({
             "event": event,
+            "entry_mode": getattr(signal, "mode", ZIGZAG_DAILY_CROSS),
+            "zone_source": signal.zone.source,
+            "chain_id": signal.zone.chain_id if signal.zone.chain_id is not None else "",
+            "chain_depth": signal.zone.chain_depth,
+            "parent_trade_id": (
+                signal.zone.parent_trade_id if signal.zone.parent_trade_id is not None else ""
+            ),
             "origin_zone_id": signal.zone.zone_id,
             "session_day": close.day.isoformat(),
             "close_time": close.roll_time.isoformat(),
@@ -308,6 +384,146 @@ class MZ50Strategy(Strategy):
         if self.p.variant == CLOSE_ON_CANDIDATE_UPDATE and self._exit_due is None:
             self._exit_due = CANDIDATE_UPDATE
 
+    # -------------------------------------------------------------- the chain
+
+    def _start_chain(self, ctx: Context, trade: Trade, signal) -> None:
+        """§14.1: after a take-profit, continue from that trade's own E50.
+
+        The new anchor is a price level, not an observed extreme, and the zone
+        distances are inherited frozen from the parent rather than re-read from
+        the margin log.
+        """
+        parent = signal.zone
+        index = len(ctx.history) - 1
+        child = ZoneVersion(
+            zone_id=self.tracker.zones.reserve_id(),
+            leg=parent.leg,
+            version=parent.chain_depth + 1,
+            kind=parent.kind,
+            anchor_price=parent.e50,
+            anchor_index=index,
+            anchor_time=ctx.now,
+            known_index=index,
+            known_time=ctx.now,
+            zones=parent.zones,
+            pip_size=parent.pip_size,
+            event_type=TP_CHAIN,
+            source=CHAIN,
+            chain_id=parent.chain_id or self._take_chain_id(),
+            chain_depth=parent.chain_depth + 1,
+            parent_trade_id=trade.id,
+            parent_zone_id=parent.zone_id,
+        )
+
+        # §14.2: where price stands now picks the entry mode, once and for all.
+        price = ctx.price
+        if child.beyond(price, child.mz0):
+            self._record_chain("chain_target_already_reached", child, price)
+            return
+        if price != child.e50 and child.beyond(price, child.e50):
+            ctx.order(
+                Side.BUY if child.direction > 0 else Side.SELL,
+                volume=self.p.volume,
+                tp=child.mz0,
+                limit=child.e50,
+                cancel_at=child.mz0,
+                tag=f"{self.name} chain z{child.zone_id} d{child.chain_depth}",
+            )
+            mode = LIMIT_RETEST
+        else:
+            mode = DAILY_CROSS
+        self._chain = ChainStep(zone=child, mode=mode, known_index=index, known_time=ctx.now)
+        self._chain_zones.append((child, index, None))
+        self._record_chain(f"created_{mode}", child, price)
+
+    def _take_chain_id(self) -> int:
+        self._next_chain_id += 1
+        return self._next_chain_id - 1
+
+    def _settle_chain_limit(self, ctx: Context, bar: Bar) -> None:
+        """§14.3: a resting order either filled inside this bar, or was voided.
+
+        The broker resolves both, so the step is read off what it left behind: a
+        position nothing else claims is the fill, and no order still waiting
+        means the near boundary voided it first.
+        """
+        step = self._chain
+        if step is None or step.mode != LIMIT_RETEST:
+            return
+        zone = step.zone
+        if ctx.positions and self._open_signal is None and self._pending is None:
+            self._pending = ChainEntry(zone=zone, time=ctx.now, mode=LIMIT_RETEST)
+            self._signal_rows.append(self._pending.as_signal_row("entered"))
+            self._used_zones.add(zone.zone_id)
+            self._record_chain("limit_filled", zone, ctx.positions[0].entry_price)
+            self._close_chain(ctx, filled=True)
+        elif not any(o.limit_price is not None for o in ctx.broker.pending):
+            self._record_chain("chain_target_reached_without_entry", zone, bar.close)
+            self._close_chain(ctx)
+
+    def _chain_daily(self, ctx: Context, bar: Bar, closes: list[RolloverPoint]) -> None:
+        """§14.2 daily mode: two new consecutive closes crossing this zone's E50."""
+        step = self._chain
+        if step is None or step.mode != DAILY_CROSS:
+            return
+        zone = step.zone
+        for close in closes:
+            if close.roll_time <= step.known_time:
+                continue
+            previous, step.prev_close = step.prev_close, close
+            if previous is None or (close.day - previous.day).days > self._max_gap:
+                continue
+            before, after = previous.price - zone.e50, close.price - zone.e50
+            if before * after >= 0:
+                continue
+            if (close.price < previous.price) != (zone.direction < 0):
+                continue                     # crossing back out is not a signal
+            entry = ChainEntry(zone=zone, time=close.roll_time, mode=DAILY_CROSS)
+            status = self._reject(ctx, entry)
+            if status is None:
+                ctx.order(
+                    Side.BUY if entry.is_long else Side.SELL,
+                    volume=self.p.volume,
+                    sl=zone.stop_for(bar.close),
+                    tp=self._target(zone),
+                    tag=f"{self.name} chain z{zone.zone_id} d{zone.chain_depth}",
+                )
+                self._pending = entry
+                self._used_zones.add(zone.zone_id)
+                status = "entered"
+                self._record_chain("daily_entered", zone, bar.close)
+                self._close_chain(ctx, filled=True)
+            self._signal_rows.append(entry.as_signal_row(status))
+            return
+
+    def _close_chain(self, ctx: Context, filled: bool = False) -> None:
+        """Retire the pending step, cancelling its order if one is still out."""
+        if self._chain is None:
+            return
+        if not filled:
+            ctx.cancel_pending()
+        index = len(ctx.history) - 1
+        zone, start, _ = self._chain_zones[-1]
+        self._chain_zones[-1] = (zone, start, index)
+        self._chain = None
+
+    def _record_chain(self, event: str, zone: ZoneVersion, price: float) -> None:
+        self._chain_rows.append({
+            "event": event,
+            "zone_id": zone.zone_id,
+            "chain_id": zone.chain_id,
+            "chain_depth": zone.chain_depth,
+            "parent_trade_id": zone.parent_trade_id,
+            "parent_zone_id": zone.parent_zone_id,
+            "direction": "LONG" if zone.direction > 0 else "SHORT",
+            "anchor_price": zone.anchor_price,
+            "e50": zone.e50,
+            "mz0": zone.mz0,
+            "mz100": zone.mz100,
+            "market_price": price,
+            "time": zone.known_time.isoformat(),
+        })
+
     # -------------------------------------------------------------- the entry
 
     def _act_on(self, ctx: Context, crossing: Crossing) -> None:
@@ -316,6 +532,10 @@ class MZ50Strategy(Strategy):
             return                       # §6: crossings back out are not signals
         status = self._reject(ctx, crossing)
         if status is None:
+            # §14.4.3: an admissible ordinary signal supersedes a pending step.
+            if self._chain is not None:
+                self._record_chain("superseded_by_zigzag_signal", self._chain.zone, ctx.bar.close)
+                self._close_chain(ctx)
             ctx.order(
                 Side.BUY if crossing.is_long else Side.SELL,
                 volume=self.p.volume,
@@ -368,6 +588,13 @@ class MZ50Strategy(Strategy):
             "instrument": self._symbol,
             "direction": "LONG" if signal.is_long else "SHORT",
             "e50": signal.level,
+            "entry_mode": getattr(signal, "mode", ZIGZAG_DAILY_CROSS),
+            "zone_source": signal.zone.source,
+            "chain_id": signal.zone.chain_id if signal.zone.chain_id is not None else "",
+            "chain_depth": signal.zone.chain_depth,
+            "parent_trade_id": (
+                signal.zone.parent_trade_id if signal.zone.parent_trade_id is not None else ""
+            ),
             "origin_zone_id": signal.zone.zone_id,
             "origin_candidate_leg_id": signal.zone.leg,
             "origin_candidate_version": signal.zone.version,
@@ -429,6 +656,15 @@ class MZ50Strategy(Strategy):
         self._warning_count = self._warning_resets = 0
         self.tracker.reset_baseline()
 
+        # §14.1: only a take-profit continues the chain, and only one step at a
+        # time. A stop, an early exit or the end of the data ends it.
+        if (
+            self.p.trend_follow
+            and self._trade_rows[-1]["exit_reason"] == "take_profit"
+            and self._chain is None
+        ):
+            self._start_chain(ctx, trade, signal)
+
     # ---------------------------------------------------------------- records
 
     def on_finish(self, ctx: Context) -> None:
@@ -442,15 +678,24 @@ class MZ50Strategy(Strategy):
         )
         if z.uncovered:
             ctx.log(f"mz50: {len(z.uncovered)} candidate(s) had no margin reading and made no zone")
+        # §14.4.7: an order still resting when the data ends is cancelled, never
+        # turned into a trade.
+        if self._chain is not None:
+            self._record_chain("end_of_data_cancel", self._chain.zone, ctx.price)
+            self._close_chain(ctx)
+        if self.p.trend_follow:
+            created = sum(1 for r in self._chain_rows if r["event"].startswith("created_"))
+            filled = sum(1 for r in self._trade_rows if r["zone_source"] == CHAIN)
+            deepest = max((r["chain_depth"] for r in self._chain_rows), default=0)
+            ctx.log(
+                f"mz50: chain created {created} step(s), {filled} traded, "
+                f"deepest {deepest}"
+            )
         if not self.p.place_orders:
             ctx.log("mz50: place_orders is false — support components only, no orders")
             return
         entered = sum(1 for r in self._signal_rows if r["status"] == "entered")
-        exits = "two-close exit on" if self.p.two_close_exit else "two-close exit off"
-        ctx.log(
-            f"mz50[TP {self.p.take_profit}, {exits}, {self.p.variant}]: "
-            f"{len(self._signal_rows)} signals, {entered} entered"
-        )
+        ctx.log(f"{self._label()}: {len(self._signal_rows)} signals, {entered} entered")
         for status in sorted({r["status"] for r in self._signal_rows} - {"entered"}):
             n = sum(1 for r in self._signal_rows if r["status"] == status)
             ctx.log(f"mz50: {n} signal(s) not traded — {status}")
@@ -460,9 +705,9 @@ class MZ50Strategy(Strategy):
         z = self.tracker.zones
         out: dict[str, list[dict]] = {}
         if z.versions:
-            out["zones"] = [
-                v.as_row(z.superseded.get(v.zone_id, (0, None))[1]) for v in z.versions
-            ]
+            rows = [v.as_row(z.superseded.get(v.zone_id, (0, None))[1]) for v in z.versions]
+            rows += [zone.as_row() for zone, _, _ in self._chain_zones]
+            out["zones"] = sorted(rows, key=lambda r: r["zone_id"])
         if z.pivots:
             out["pivots"] = [
                 {
@@ -489,6 +734,8 @@ class MZ50Strategy(Strategy):
             out["cases"] = self._trade_rows
         if self._warning_rows:
             out["warnings"] = self._warning_rows
+        if self._chain_rows:
+            out["chain"] = self._chain_rows
         return out
 
     # ------------------------------------------------------------- the chart
@@ -501,7 +748,12 @@ class MZ50Strategy(Strategy):
             return None
         p = self.p
         z = self.tracker.zones
-        spans = zone_spans(z.versions, z.superseded, len(self._bars) - 1)
+        last = len(self._bars) - 1
+        spans = zone_spans(z.versions, z.superseded, last)
+        spans += [
+            (zone, start, last if until is None else until)
+            for zone, start, until in self._chain_zones
+        ]
         payload = build_payload(
             symbol=self._symbol,
             timeframe=self._timeframe,
@@ -531,6 +783,8 @@ class MZ50Strategy(Strategy):
         parts = [f"TP {p.take_profit}"]
         if p.two_close_exit:
             parts.append("two-close exit")
+        if p.trend_follow:
+            parts.append("chain")
         parts.append(p.variant)
         return f"{self.name} [{', '.join(parts)}]"
 

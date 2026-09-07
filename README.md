@@ -28,7 +28,7 @@ backtester/
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 signals/        scheduled Telegram heartbeats over the same code
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          357 tests, ~2s
+tests/          380 tests, ~3s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -141,6 +141,61 @@ trading calendar in this project, so `max_gap_days` (default 3) stands in, over
 *emitted* daily points rather than clock hours — a weekend already collapses to
 one skipped day by construction. Every crossing and every warning reset inherits
 that approximation.
+
+### Following the chain after a take-profit
+
+`impl-spec/[2 Sep5]E50_NearTP_OriginalSL_TwoCloseExit_Spec+TrendFollowLogic.md`
+§14, behind `trend_follow: true`.
+
+Every take-profit — and only a take-profit — opens a follow-on zone anchored on
+**that trade's own E50**, in the same direction, inheriting its `dFMZ`/`dIMZ`
+frozen rather than re-reading the margin log. A stop, an early exit or the end
+of the data ends the chain instead.
+
+Where price sits when the step is created picks its entry, once:
+
+| price at creation | what happens |
+|---|---|
+| between the new E50 and the new MZ0 | a limit rests at the new E50 |
+| at the new E50, or on the anchor's side | wait for two daily closes to cross it |
+| at the new MZ0 or past it | the branch ends, `chain_target_already_reached` |
+
+A resting limit is voided if price reaches the new MZ0 first, and a bar touching
+both resolves as the cancellation, since its intrabar order is unknown. One
+position and one pending step at a time: a fresh admissible ZigZag signal
+supersedes a step still waiting, and an open child blocks ordinary signals until
+it exits.
+
+```bash
+scripts/run_backtest.py -c configs/strategies/mz50.yaml --label D --save \
+    -p trend_follow=true
+```
+
+| | C | D — with the chain |
+|---|---:|---:|
+| entered trades | 79 | 100 |
+| take-profit exits | 35 | 46 |
+| two-close exits | 26 | 31 |
+| stop-loss exits | 18 | 23 |
+| win rate | 45.6% | 47.0% |
+| profit factor | 0.83 | **0.87** |
+| net P&L | -482.35 | **-456.12** |
+
+The chain created 46 steps and traded 28 of them — 11 through a resting limit,
+17 through a daily crossing — reaching depth 3. Of the rest, 15 were superseded
+by a fresh ZigZag signal and 3 saw price reach the new near boundary before the
+limit could fill.
+
+```
+zigzag  72 trades   net -413.75
+chain   28 trades   net  -42.37     depth 1: 21   depth 2: 6   depth 3: 1
+```
+
+So D is not C plus a separate book of winners: the chain's own 28 trades lose
+too, just far less per trade, and they displace some ordinary entries. The
+specification's warning applies — the "+192.2 pips over 32 trades" estimate came
+from proxy fills against a fixed trade list, and a full re-run changes both the
+count and the result.
 
 ## The casebook
 

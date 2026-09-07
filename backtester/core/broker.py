@@ -71,6 +71,7 @@ class SimulatedBroker:
         self.trades: list[Trade] = []
         self.equity_curve: list[EquityPoint] = []
         self.pending: list[OrderRequest] = []
+        self.cancelled: list[OrderRequest] = []   # limit orders voided before filling
         self.rejected: list[tuple[OrderRequest, str]] = []
         self._next_id = 1
         self._last_price = 0.0
@@ -103,7 +104,8 @@ class SimulatedBroker:
     # ----------------------------------------------------------------- orders
 
     def submit(self, order: OrderRequest) -> None:
-        """Queue a market order. It fills at the next price the engine offers."""
+        """Queue an order. Market orders fill at the next price the engine offers;
+        limit orders rest until the market reaches their level."""
         volume = self.instrument.round_volume(order.volume)
         if volume <= 0:
             self.rejected.append((order, "volume rounds to zero"))
@@ -112,23 +114,101 @@ class SimulatedBroker:
         self.pending.append(order)
 
     def fill_pending(self, bid: float, time: datetime, bar: Bar | None = None) -> list[Position]:
-        """Execute every queued order at `bid` (a price already known to be safe)."""
+        """Execute every queued order at `bid` (a price already known to be safe).
+
+        A limit order fills here only when `bid` is already through its level,
+        which is a better price than it asked for; otherwise it stays queued for
+        `process_bar` to fill at the level itself.
+        """
         if not self.pending:
             return []
-        opened = []
+        opened, resting = [], []
         orders, self.pending = self.pending, []
         for order in orders:
+            if order.limit_price is not None:
+                if self._voided(order, bid):
+                    self.cancelled.append(order)
+                    continue
+                if not self._limit_reached(order, bid, bar):
+                    resting.append(order)
+                    continue
             position = self._open(order, bid, time, bar)
             if position is not None:
                 opened.append(position)
+        self.pending = resting
         return opened
 
-    def _open(self, order: OrderRequest, bid: float, time: datetime, bar: Bar | None) -> Position | None:
-        # Longs pay the spread on entry, shorts pay it on exit.
+    @staticmethod
+    def _voided(order: OrderRequest, price: float) -> bool:
+        """Has price passed the level that voids this order?"""
+        if order.cancel_price is None:
+            return False
         if order.side is Side.BUY:
-            price = self.ask(bid, bar) + self._slippage
+            return price >= order.cancel_price
+        return price <= order.cancel_price
+
+    def _limit_reached(self, order: OrderRequest, bid: float, bar: Bar | None) -> bool:
+        """Is `bid` good enough to fill this limit order?"""
+        if order.side is Side.BUY:
+            return self.ask(bid, bar) <= order.limit_price
+        return bid >= order.limit_price
+
+    def fill_limits_within(self, bar: Bar) -> list[Position]:
+        """Fill resting limit orders the bar traded through, at their own level.
+
+        A position opened here is not walked through the rest of the same bar:
+        the path after the fill is unknown, so its stop and target start on the
+        next one.
+        """
+        if not any(o.limit_price is not None for o in self.pending):
+            return []
+        spread = self._spread(bar)
+        opened, resting = [], []
+        for order in self.pending:
+            if order.limit_price is None:
+                resting.append(order)
+                continue
+            limit = order.limit_price
+            # The invalidation is checked first, so a bar reaching both levels
+            # resolves as the cancellation rather than the fill.
+            reached_void = order.cancel_price is not None and (
+                bar.high >= order.cancel_price if order.side is Side.BUY
+                else bar.low <= order.cancel_price
+            )
+            if reached_void:
+                self.cancelled.append(order)
+                continue
+            # A buy fills when the ask reaches down to the limit, a sell when the
+            # bid reaches up to it. `bid` is chosen so the fill lands exactly there.
+            if order.side is Side.BUY and bar.low + spread <= limit:
+                position = self._open(order, limit - spread, bar.time, bar, limit=True)
+            elif order.side is Side.SELL and bar.high >= limit:
+                position = self._open(order, limit, bar.time, bar, limit=True)
+            else:
+                resting.append(order)
+                continue
+            if position is not None:
+                opened.append(position)
+        self.pending = resting
+        return opened
+
+    def cancel_pending(self) -> int:
+        """Drop every queued order. Returns how many were dropped."""
+        count = len(self.pending)
+        self.pending.clear()
+        return count
+
+    def _open(
+        self, order: OrderRequest, bid: float, time: datetime, bar: Bar | None,
+        limit: bool = False,
+    ) -> Position | None:
+        # Longs pay the spread on entry, shorts pay it on exit. A limit order
+        # never fills worse than its level, so slippage does not apply to it.
+        slip = 0.0 if limit else self._slippage
+        if order.side is Side.BUY:
+            price = self.ask(bid, bar) + slip
         else:
-            price = bid - self._slippage
+            price = bid - slip
 
         price = self.instrument.round_price(price)
         if not self._has_margin(order.volume, price):
@@ -201,6 +281,10 @@ class SimulatedBroker:
             if exit_fill is not None:
                 reason, price = exit_fill
                 closed.append(self._close(position, price, bar.time, reason))
+
+        # Resting limit orders fill last, so a position opened inside this bar
+        # is not also walked through it.
+        self.fill_limits_within(bar)
 
         self._mark_to_market(bar.close, bar)
         closed.extend(self._check_stop_out(bar))
