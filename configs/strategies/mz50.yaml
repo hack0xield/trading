@@ -37,7 +37,7 @@ params:
 
   # --- the trading -------------------------------------------------------
   place_orders: true       # false = draw the support components, trade nothing
-  take_profit: mz0         # the near boundary. mz100 is the far one, and the
+  take_profit: mz100         # the near boundary. mz100 is the far one, and the
                            # stop stays 2*entry - mz100 either way, so aiming
                            # near lowers the planned reward-to-risk below 1
                            # rather than moving the stop.
@@ -47,7 +47,7 @@ params:
                            # fills at the next open. A close on the zone side,
                            # exactly on e50, or a break in the daily sequence
                            # clears the warning.
-  trend_follow: false      # after every take-profit, open a follow-on zone
+  trend_follow: true       # after every take-profit, open a follow-on zone
                            # anchored on that trade's own e50, in the same
                            # direction and inheriting its zone distances. If
                            # price already sits between the new e50 and the new
