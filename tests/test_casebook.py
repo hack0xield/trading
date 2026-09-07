@@ -1,6 +1,6 @@
 """The Backtest Database and its views.
 
-Checked against `impl-spec/Claude Specification_ Backtest Data Collection and
+Checked against `impl-spec-old/Claude Specification_ Backtest Data Collection and
 Reporting.md` and against the reference export in `backtest_tables.7z`, whose
 headline figures the aggregation has to reproduce exactly.
 """

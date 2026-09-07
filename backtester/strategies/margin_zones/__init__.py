@@ -5,7 +5,7 @@ anchors those on the ZigZag candidate and versions them as it moves,
 `rollover.py` samples the daily CFD break, `crossing.py` pairs those samples
 against a zone's E50 level, and `report.py` draws the result.
 
-See `impl-spec/MarginZones_revised.md` for the specification this implements.
+See `impl-spec-old/MarginZones_revised.md` for the specification this implements.
 """
 
 from .crossing import DEFAULT_MAX_GAP_DAYS, Crossing, CrossingTracker

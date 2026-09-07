@@ -53,7 +53,7 @@ That is the null hypothesis behaving exactly as it should.
 
 ## The margin-zone strategy
 
-`impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`, as one forward pass.
+`impl-spec-old/Provisional_ZigZag_MZ50_Strategy_Spec.md`, as one forward pass.
 
 ```bash
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
@@ -123,7 +123,7 @@ median 94.
 ## The casebook
 
 `--save` also writes the Backtest Database and its views, per
-`impl-spec/Claude Specification_ Backtest Data Collection and Reporting.md`:
+`impl-spec-old/Claude Specification_ Backtest Data Collection and Reporting.md`:
 
     casebook.csv                 one row per trade, the specification's columns
     casebook_total_statistics.csv

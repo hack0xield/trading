@@ -1,6 +1,6 @@
 """Margin zones: the maths, the contract specs, and the reading log.
 
-The anchor for the whole file is the worked example in `impl-spec/Margin Zones.md`:
+The anchor for the whole file is the worked example in `impl-spec-old/Margin Zones.md`:
 
     MM 2900, PP 6.25, NP 2  ->  FMZ 232, IMZ 255
 

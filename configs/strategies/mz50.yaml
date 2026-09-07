@@ -2,7 +2,7 @@
 #
 #   scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 #
-# Specification: impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md. The zone
+# Specification: impl-spec-old/Provisional_ZigZag_MZ50_Strategy_Spec.md. The zone
 # hangs off the provisional ZigZag candidate, so it is knowable immediately;
 # every strict extension freezes a new version, and a crossing counts only when
 # both rollover observations were measured against the same one. Entry is a

@@ -1,6 +1,6 @@
 """CME margin zones — contract specs, margin readings, and the zone maths.
 
-The idea (see `impl-spec/Margin Zones.md`): exchange maintenance margin is the exchange's
+The idea (see `impl-spec-old/Margin Zones.md`): exchange maintenance margin is the exchange's
 own estimate of a one-day adverse move it needs collateral against. Divide it
 by the value of a pip and you get that estimate expressed as a **distance in
 pips** — how far price has to move against one contract to burn the margin.
@@ -160,7 +160,7 @@ class MarginObservation:
 class MarginZones:
     """The computed zones for one contract at one point in time.
 
-    Terminology follows `impl-spec/MarginZones_revised.md` §8, which is strict about it:
+    Terminology follows `impl-spec-old/MarginZones_revised.md` §8, which is strict about it:
 
     * **FMZ** — distance from the extremum to the **near** boundary
     * **IMZ** — distance from the same extremum to the **far** boundary

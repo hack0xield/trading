@@ -12,7 +12,8 @@ and posts scheduled signals.
 | `signals/` | scheduled Telegram heartbeats over the same code |
 | `configs/` | run configs (YAML), contract specs, the broker clock |
 | `mt5-mcp-server/` | the live MT5 terminal as MCP tools |
-| `impl-spec/` | the specifications the strategies implement |
+| `impl-spec/` | the specifications to build next |
+| `impl-spec-old/` | the specifications the code implements today |
 
 ## Two interpreters
 

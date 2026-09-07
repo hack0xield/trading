@@ -1,6 +1,6 @@
 """The Backtest Database and its aggregate views.
 
-Implements `impl-spec/Claude Specification_ Backtest Data Collection and
+Implements `impl-spec-old/Claude Specification_ Backtest Data Collection and
 Reporting.md`: one row per trade in a `Backtest Database`, six aggregate tables
 that are *views* over it, and a report built from those. Every figure in the
 report comes from the one table, which is the point of the specification —

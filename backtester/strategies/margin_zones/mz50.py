@@ -1,6 +1,6 @@
 """Provisional ZigZag candidate -> MZ50 crossing -> MZ100.
 
-Implements `impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`. One forward
+Implements `impl-spec-old/Provisional_ZigZag_MZ50_Strategy_Spec.md`. One forward
 pass: every level it records was knowable from closed bars at the moment it was
 recorded, and nothing is redrawn afterwards.
 

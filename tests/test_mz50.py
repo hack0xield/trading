@@ -1,6 +1,6 @@
 """Provisional-candidate Margin Zone strategy.
 
-Checked against `impl-spec/Provisional_ZigZag_MZ50_Strategy_Spec.md`. §15 lists
+Checked against `impl-spec-old/Provisional_ZigZag_MZ50_Strategy_Spec.md`. §15 lists
 twelve minimum tests and §14 eleven invariants.
 
 The point of the design is that a zone anchored on a *moving* candidate must
