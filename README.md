@@ -28,7 +28,7 @@ backtester/
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 signals/        scheduled Telegram heartbeats over the same code
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          344 tests, ~2s
+tests/          357 tests, ~2s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -53,7 +53,8 @@ That is the null hypothesis behaving exactly as it should.
 
 ## The margin-zone strategy
 
-`impl-spec-old/Provisional_ZigZag_MZ50_Strategy_Spec.md`, as one forward pass.
+`impl-spec/[1 Sep5]E50_NearTP_OriginalSL_TwoCloseExit_Spec.md`, as one forward
+pass.
 
 ```bash
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
@@ -64,61 +65,82 @@ leg in progress — not off a confirmed pivot. The candidate is knowable from
 closed bars alone, so nothing reads the future; what it is not is *final*. Every
 strict extension of it freezes a new immutable zone version with its own levels,
 its own `known_time` and its own crossing baseline, and a crossing counts only
-when both rollover observations were measured against the same version. That is
+when both daily observations were measured against the same version. That is
 what stops a level sliding under a static price and registering as a crossing
 price never made.
 
-Entry is a True crossing of **E50** — the 50% Extremum-to-50% MZ level,
-`anchor ± (dFMZ + dIMZ) / 4` — toward the zone. Target is `MZ100`, and the stop
-mirrors that distance about the actual fill, so risk and reward are 1:1 against
-the price really paid. The specification calls that entry level `MZ50`; the
-band's own midpoint is recorded as `mz50` on every zone version and is not
-traded.
+**Entry** is a True crossing of `E50` — the 50% Extremum-to-50% MZ level,
+`anchor ± (dFMZ + dIMZ) / 4` — toward the zone, by two consecutive daily
+clearing closes.
+
+**Target** is `MZ0`, the near boundary. **Stop** is `2 × entry − MZ100`, which
+keeps the distance to the *far* boundary, so the planned reward-to-risk sits
+below 1 by construction and is deliberately not restored by moving the stop.
+
+**Early exit.** Two consecutive daily closes back past the trade's *own*
+originating `E50`, on the anchor's side, close the position at the next
+executable price (`e50_two_close_return`). The first close warns, the second
+confirms. A close on the zone's side, a close exactly on `E50`, or a break in
+the daily sequence clears the warning. The bracket keeps working throughout: a
+target or stop reached first wins and cancels the pending exit.
 
 `place_orders: false` runs the same pass with the trading rule off: the ZigZag,
-the zone versions, the daily rollover points and their True/False crossings are
-recorded and drawn, and nothing is ordered.
+the zone versions, the daily points and their True/False crossings are recorded
+and drawn, and nothing is ordered.
 
 `--save` writes the chart alongside `zones.csv`, `pivots.csv`, `rollover.csv`,
-`crossings.csv`, `signals.csv` and `cases.csv`. Every row was knowable at the
-timestamp it carries. A zone is drawn from the bar that made it knowable, not
-back to the extreme it names, and each candidate is joined to the pivot that
-opened its leg by a dashed line, so the repainting is visible rather than
-hidden. The chart has Show/Hide controls for the ZigZag, the zones, the rollover
-layer and the orders.
+`crossings.csv`, `signals.csv`, `cases.csv` and `warnings.csv` — the last being
+every warning, reset and confirmation, not just the pair that fired. Every row
+was knowable at the timestamp it carries. A zone is drawn from the bar that made
+it knowable, not back to the extreme it names, and each candidate is joined to
+the pivot that opened its leg by a dashed line, so the repainting is visible
+rather than hidden.
 
 Strategies that do not override `Strategy.chart` get the generic
 price-and-trades chart from `scripts/plot_run.py` instead, and `--no-chart`
 skips it.
 
-### The two variants
+### The comparison runs
 
-EUR/USD H4, 2% deviation, 2022-2026, contract `6E`: 831 zone versions on 64
-confirmed pivots, 1,205 rollover points, 167 crossings of which 107 are True.
+§12's three runs, from the one config. EUR/USD H4, 2% deviation, 2022-2026,
+contract `6E`: 831 zone versions on 64 confirmed pivots, 1,205 daily points.
 
-| | KEEP_OPEN | CLOSE_ON_CANDIDATE_UPDATE |
-|---|---:|---:|
-| entered trades | 78 | 79 |
-| candidate-update exits | 0 | **6** |
-| TP / SL | 36 / 42 | 36 / 37 |
-| win rate | 46.2% | 45.6% |
-| profit factor | 0.82 | 0.85 |
-| net P&L | -693.77 | -578.53 |
+```bash
+scripts/run_backtest.py -c configs/strategies/mz50.yaml --label A --save \
+    -p take_profit=mz100 -p two_close_exit=false
+scripts/run_backtest.py -c configs/strategies/mz50.yaml --label B --save \
+    -p take_profit=mz0 -p two_close_exit=false
+scripts/run_backtest.py -c configs/strategies/mz50.yaml --label C --save
+```
 
-Entries before the first candidate-update exit are identical in both, which is
-the check §16 asks for — any other difference would be a bug rather than a
-finding.
+| | A — far TP | B — near TP | C — near TP + exit |
+|---|---:|---:|---:|
+| entered trades | 78 | 79 | 79 |
+| planned RR | 1.00 | 0.77 | 0.77 |
+| take-profit exits | 36 | 42 | 35 |
+| stop-loss exits | 42 | 37 | **18** |
+| two-close exits | — | — | **26** |
+| win rate | 46.2% | 53.2% | 45.6% |
+| profit factor | 0.82 | 0.79 | **0.83** |
+| net P&L | -693.77 | -758.83 | **-482.35** |
 
-**Two things worth knowing.** The signal level must sit closer to the anchor
-than the ZigZag threshold, or price confirms the pivot and flips the leg before
-it can be reached: at a 2% deviation on EUR/USD the threshold is ~220 pips
-against ~102 to E50. The band's midpoint, at ~185 pips, is close enough to that
-threshold to yield only 16 crossings against E50's 167.
+The near target does what it should in isolation — the hit rate climbs from
+46.2% to 53.2% — but B is *worse* overall, because 0.77 RR costs more than the
+extra hits pay. C is where the pieces work together: the early exit converts 19
+of the 37 stop-losses into smaller ones, cutting the loss by 30% at a barely
+changed win rate.
 
-And the stop lands at `anchor + (dIMZ − dFMZ) / 2`, barely beyond the anchor, so
-an adverse extension usually takes the stop out before it can force an exit —
-which is why only 6 of 78 trades end that way. Risk per trade ran 3 to 160 pips,
-median 94.
+All three are still negative. At 0.1 lot a dollar is a pip, so C is about -482
+pips over 79 trades. The specification's own note applies: the -127.4 pip HTML
+estimate is not an acceptance benchmark, since it used fixed entries and proxy
+fills.
+
+**One departure to know about.** §5 requires daily-close continuity from the
+instrument's session calendar and explicitly forbids a fixed window. There is no
+trading calendar in this project, so `max_gap_days` (default 3) stands in, over
+*emitted* daily points rather than clock hours — a weekend already collapses to
+one skipped day by construction. Every crossing and every warning reset inherits
+that approximation.
 
 ## The casebook
 

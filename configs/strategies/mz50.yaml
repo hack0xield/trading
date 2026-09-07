@@ -1,15 +1,13 @@
-# Provisional ZigZag candidate -> E50 crossing -> MZ100.
+# Provisional ZigZag candidate -> E50 crossing -> near margin zone.
 #
 #   scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 #
-# Specification: impl-spec-old/Provisional_ZigZag_MZ50_Strategy_Spec.md. The zone
-# hangs off the provisional ZigZag candidate, so it is knowable immediately;
-# every strict extension freezes a new version, and a crossing counts only when
-# both rollover observations were measured against the same one. Entry is a
-# True crossing of E50 toward the zone, target MZ100, stop mirrored about the
-# fill. The specification names that entry level MZ50; it is the 50%
-# Extremum-to-50% MZ level, anchor +- (dFMZ+dIMZ)/4. `place_orders: false` runs
-# the same pass with the trading rule off.
+# Specification: impl-spec/[1 Sep5]E50_NearTP_OriginalSL_TwoCloseExit_Spec.md.
+# The zone hangs off the provisional ZigZag candidate, so it is knowable
+# immediately; every strict extension freezes a new version, and a crossing
+# counts only when both daily observations were measured against the same one.
+# Entry is a True crossing of E50 toward the zone, target MZ0, stop
+# 2*entry - MZ100. `place_orders: false` runs the same pass with the rule off.
 
 strategy: mz50
 symbol: EURUSD
@@ -38,9 +36,24 @@ params:
 
   # --- the trading -------------------------------------------------------
   place_orders: true       # false = draw the support components, trade nothing
-  variant: KEEP_OPEN       # or CLOSE_ON_CANDIDATE_UPDATE. The only difference is
-                           # whether a later strict extension of the originating
-                           # candidate closes an open trade.
+  take_profit: mz0         # the near boundary. mz100 is the far one, and the
+                           # stop stays 2*entry - mz100 either way, so aiming
+                           # near lowers the planned reward-to-risk below 1
+                           # rather than moving the stop.
+  two_close_exit: true     # leave after two consecutive daily closes back past
+                           # the trade's own e50, on the anchor's side. The
+                           # first warns, the second confirms, and the exit
+                           # fills at the next open. A close on the zone side,
+                           # exactly on e50, or a break in the daily sequence
+                           # clears the warning.
+  variant: KEEP_OPEN       # the specification's runs are all KEEP_OPEN.
+                           # CLOSE_ON_CANDIDATE_UPDATE additionally closes when
+                           # the originating candidate extends against the trade.
+
+# The specification's comparison runs, from this same config:
+#   A  -p take_profit=mz100 -p two_close_exit=false
+#   B  -p take_profit=mz0   -p two_close_exit=false
+#   C  as configured below
 
 execution:
   initial_balance: 100000

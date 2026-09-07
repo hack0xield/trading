@@ -96,9 +96,9 @@ class ZoneVersion:
     def hi(self) -> float:
         return max(self.mz0, self.mz100)
 
-    def beyond(self, price: float) -> bool:
-        """Has price reached or passed the far boundary?"""
-        return price <= self.mz100 if self.direction < 0 else price >= self.mz100
+    def beyond(self, price: float, level: float) -> bool:
+        """Has price reached or passed `level`, travelling the zone's own way?"""
+        return price <= level if self.direction < 0 else price >= level
 
     def as_row(self, until_time: datetime | None = None) -> dict:
         return {

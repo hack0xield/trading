@@ -23,7 +23,9 @@ from backtester.strategies.margin_zones.crossing import CrossingTracker
 from backtester.strategies.margin_zones.margins import MarginZones
 from backtester.strategies.margin_zones.mz50 import (
     CLOSE_ON_CANDIDATE_UPDATE,
+    FAR,
     KEEP_OPEN,
+    NEAR,
     MZ50Strategy,
 )
 from backtester.strategies.margin_zones.zones import INITIAL, STRICT_EXTENSION, ZoneTracker
@@ -203,6 +205,21 @@ class TestCrossing:
             fired += tracker.push(h4(i, p))
         assert fired == []
 
+    def test_a_reset_baseline_stops_the_next_point_pairing_backwards(self):
+        """§9/§15.10: after an exit, a fresh pair is required."""
+        series = self.series([1960, 1940], hold=1960)
+        # Bar 30 files the 1960 observation and bar 36 the 1940 one; a reset
+        # between them is what an exit does, and the pair must not survive it.
+        assert self.run([1960, 1940], hold=1960)[1], "the pair forms without a reset"
+
+        tracker = CrossingTracker(zones_for, pip_size=1.0, deviation_abs=150.0)
+        fired = []
+        for i, price in enumerate(series):
+            if i == 33:
+                tracker.reset_baseline()
+            fired += tracker.push(h4(i, price))
+        assert fired == []
+
     def test_a_crossing_is_never_recorded_before_its_zone_existed(self):
         """§14.2."""
         _, fired = self.run([1960, 1940], hold=1960)
@@ -290,17 +307,40 @@ class TestStrategy:
         signal = strategy.tracker.crossings[0]
         assert result.trades[0].entry_time > signal.time
 
-    def test_the_target_is_mz100(self, desk, gold, config):
+    def test_the_target_is_the_near_boundary(self, desk, gold, config):
+        """§6: TP is MZ0, not the far boundary."""
         strategy = MZ50Strategy(**desk)
+        result = run(strategy, crossing_setup(), gold, config)
+        zone = strategy.tracker.crossings[0].zone
+        assert result.trades[0].tp == pytest.approx(zone.mz0)
+        assert result.trades[0].tp != pytest.approx(zone.mz100)
+
+    def test_run_a_aims_at_the_far_boundary_instead(self, desk, gold, config):
+        """§12 run A keeps the old target."""
+        strategy = MZ50Strategy(**{**desk, "take_profit": FAR})
         result = run(strategy, crossing_setup(), gold, config)
         assert result.trades[0].tp == pytest.approx(strategy.tracker.crossings[0].zone.mz100)
 
-    def test_the_bracket_is_symmetric_about_the_actual_fill(self, desk, gold, config):
-        """§14.7, measured on the filled trade rather than on the signal."""
+    def test_the_stop_keeps_the_distance_to_the_far_boundary(self, desk, gold, config):
+        """§6: `SL = 2 * entry - origin_MZ100`, whatever the target is."""
+        strategy = MZ50Strategy(**desk)
+        trade = run(strategy, crossing_setup(), gold, config).trades[0]
+        zone = strategy.tracker.crossings[0].zone
+        assert trade.sl == pytest.approx(2 * trade.entry_price - zone.mz100, abs=1e-6)
+
+    def test_moving_the_target_does_not_move_the_stop(self, desk, gold, config):
+        """§13.2: the near target changes TP alone."""
+        near = run(MZ50Strategy(**desk), crossing_setup(), gold, config).trades[0]
+        far = run(MZ50Strategy(**{**desk, "take_profit": FAR}),
+                  crossing_setup(), gold, config).trades[0]
+        assert near.entry_price == far.entry_price
+        assert near.sl == far.sl
+        assert near.tp != far.tp
+
+    def test_the_planned_reward_to_risk_is_below_one(self, desk, gold, config):
+        """§6: intended, and not to be restored by moving the stop."""
         trade = run(MZ50Strategy(**desk), crossing_setup(), gold, config).trades[0]
-        assert abs(trade.tp - trade.entry_price) == pytest.approx(
-            abs(trade.entry_price - trade.sl), abs=1e-6
-        )
+        assert 0 < trade.planned_rr < 1
 
     def test_the_stop_sits_just_past_the_anchor(self, desk, gold, config):
         """`stop = 2*entry - MZ100`, and at a fill of E50 that is
@@ -327,7 +367,11 @@ class TestStrategy:
         case = result.artifacts["cases"][0]
         for field in ("origin_zone_id", "origin_candidate_leg_id", "initial_tp",
                       "initial_sl", "initial_risk", "exit_reason", "r_multiple",
-                      "ambiguous_tp_sl", "candidate_updates_while_open", "e50"):
+                      "ambiguous_tp_sl", "candidate_updates_while_open", "e50",
+                      "initial_reward", "initial_rr", "origin_mz0", "origin_mz50",
+                      "origin_mz100", "warning_count", "warning_reset_count",
+                      "confirming_close_time", "pending_exit_at_end",
+                      "execution_mode"):
             assert field in case
 
     def test_a_trade_keeps_its_originating_zone(self, desk, gold, config):
@@ -340,6 +384,86 @@ class TestStrategy:
         with pytest.raises(ValueError, match="variant must be one of"):
             run(MZ50Strategy(**desk, variant="MAYBE"), crossing_setup(), gold, config)
 
+
+
+class TestTwoCloseExit:
+    """§7 — leaving on two consecutive daily closes back past the trade's E50.
+
+    The trade enters short at ~1730 off an E50 of 1737.5, so a daily close above
+    1737.5 is adverse and one below it is on the zone's side. 1800 stays well
+    under the 2000 anchor, so it warns without extending the candidate.
+    """
+
+    def case(self, desk, gold, config, tail, **params):
+        strategy = MZ50Strategy(**{**desk, **params})
+        result = run(strategy, bars_for([1900, 1730, 1730] + tail), gold, config)
+        return strategy, result
+
+    def test_two_adverse_closes_confirm_the_exit(self, desk, gold, config):
+        """§15.6."""
+        strategy, result = self.case(desk, gold, config, [1800, 1800, 1800])
+        (case,) = result.artifacts["cases"]
+        assert case["exit_reason"] == "e50_two_close_return"
+        assert case["warning_count"] == 1
+        assert case["confirming_close_time"] > case["confirmed_warning_time"]
+
+    def test_the_exit_is_after_the_confirming_close_never_at_it(self, desk, gold, config):
+        """§7: the first executable price once the second close is known."""
+        _, result = self.case(desk, gold, config, [1800, 1800, 1800])
+        (case,) = result.artifacts["cases"]
+        assert case["exit_time"] > case["confirming_close_time"]
+        assert case["execution_mode"] == "next_open"
+
+    def test_one_adverse_close_only_warns(self, desk, gold, config):
+        """§15.6: the first is a warning, nothing more."""
+        _, result = self.case(desk, gold, config, [1800, 1700, 1700])
+        (case,) = result.artifacts["cases"]
+        assert case["exit_reason"] != "e50_two_close_return"
+        assert case["warning_count"] == 1 and case["warning_reset_count"] == 1
+
+    def test_a_close_on_the_zone_side_clears_the_warning(self, desk, gold, config):
+        """§15.7."""
+        strategy, result = self.case(desk, gold, config, [1800, 1700, 1800, 1700])
+        (case,) = result.artifacts["cases"]
+        assert case["exit_reason"] != "e50_two_close_return"
+        events = [w["event"] for w in strategy.artifacts()["warnings"]]
+        assert events.count("warning") == 2
+        assert "reset_zone_side" in events
+
+    def test_a_close_exactly_on_e50_clears_the_warning(self, desk, gold, config):
+        """§15.7: equality is neutral, and it resets."""
+        strategy, result = self.case(desk, gold, config, [1800, 1737.5, 1800, 1700])
+        (case,) = result.artifacts["cases"]
+        assert case["exit_reason"] != "e50_two_close_return"
+        assert "reset_on_level" in [w["event"] for w in strategy.artifacts()["warnings"]]
+
+    def test_the_warnings_come_only_after_the_fill(self, desk, gold, config):
+        """§7: the signal's own close cannot be the first warning."""
+        strategy, result = self.case(desk, gold, config, [1800, 1800, 1800])
+        (case,) = result.artifacts["cases"]
+        for warning in strategy.artifacts()["warnings"]:
+            assert warning["close_time"] > case["entry_time"]
+
+    def test_switching_it_off_leaves_the_trade_alone(self, desk, gold, config):
+        """§12 runs A and B carry no early exit."""
+        _, result = self.case(desk, gold, config, [1800, 1800, 1800], two_close_exit=False)
+        (case,) = result.artifacts["cases"]
+        assert case["exit_reason"] != "e50_two_close_return"
+        assert case["warning_count"] == 0
+
+    def test_the_target_closes_the_trade_before_any_warning(self, desk, gold, config):
+        """§15.11: TP reached first wins, and no second exit is created."""
+        _, result = self.case(desk, gold, config, [1499, 1800, 1800, 1800])
+        (case,) = result.artifacts["cases"]
+        assert case["exit_reason"] == "take_profit"
+        assert case["warning_count"] == 0
+        assert len(result.trades) >= 1
+
+    def test_the_warning_log_is_published(self, desk, gold, config):
+        """§11: every warning, reset and confirmation, not just the last pair."""
+        strategy, _ = self.case(desk, gold, config, [1800, 1700, 1800, 1800])
+        rows = strategy.artifacts()["warnings"]
+        assert rows and {"event", "session_day", "close_price", "origin_e50"} <= set(rows[0])
 
 
 class TestVariants:
@@ -416,14 +540,23 @@ class TestChart:
         assert payload["crossings"], "the crossings went missing"
         assert payload["trades"], "the orders went missing"
 
-    def test_the_title_names_the_variant(self, desk, gold, config, tmp_path):
-        """Two runs differing only in variant must not share a title."""
-        keep = self.payload(desk, gold, config, tmp_path)
-        close = self.payload(
-            {**desk, "variant": CLOSE_ON_CANDIDATE_UPDATE}, gold, config, tmp_path
-        )
-        assert keep["strategy"] == "mz50 [KEEP_OPEN]"
-        assert close["strategy"] == "mz50 [CLOSE_ON_CANDIDATE_UPDATE]"
+    def test_the_title_names_everything_a_run_can_differ_by(
+        self, desk, gold, config, tmp_path
+    ):
+        """The §12 comparison runs must not share a heading."""
+        titles = {
+            "A": self.payload({**desk, "take_profit": FAR, "two_close_exit": False},
+                              gold, config, tmp_path)["strategy"],
+            "B": self.payload({**desk, "two_close_exit": False},
+                              gold, config, tmp_path)["strategy"],
+            "C": self.payload(desk, gold, config, tmp_path)["strategy"],
+            "variant": self.payload({**desk, "variant": CLOSE_ON_CANDIDATE_UPDATE},
+                                    gold, config, tmp_path)["strategy"],
+        }
+        assert titles["A"] == "mz50 [TP mz100, KEEP_OPEN]"
+        assert titles["B"] == "mz50 [TP mz0, KEEP_OPEN]"
+        assert titles["C"] == "mz50 [TP mz0, two-close exit, KEEP_OPEN]"
+        assert len(set(titles.values())) == len(titles)
 
     def test_a_drawing_run_says_it_placed_no_orders(self, desk, gold, config, tmp_path):
         payload = self.payload({**desk, "place_orders": False}, gold, config, tmp_path)
@@ -524,5 +657,6 @@ class TestChartRenders:
             line.split(":", 1)[1].strip()
             for line in out.stdout.splitlines() if line.strip().startswith("title")
         )
-        assert title.startswith("XAUUSD H4 — mz50 [KEEP_OPEN],")
+        assert title.startswith("XAUUSD H4 — mz50 [TP mz0, two-close exit, KEEP_OPEN],")
         assert "zone versions" in title and "orders" in title
+
