@@ -555,8 +555,9 @@ class MZ50Strategy(Strategy):
         """§5/§9's reasons a signal produces no trade. None means take it."""
         if self._pending is not None or not ctx.is_flat:
             return "ignored_open_trade"
-        if crossing.zone.zone_id in self._used_zones:
-            return "zone_already_traded"
+        # TEMP: §9's one-trade-per-zone-version rule is disabled for testing.
+        # if crossing.zone.zone_id in self._used_zones:
+        #     return "zone_already_traded"
         # §5: no trade if price is already at or past the target. The fill is
         # the next open and unknown here, so this bar's close stands in for it.
         entry = ctx.bar.close
