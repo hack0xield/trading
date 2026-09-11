@@ -7,7 +7,7 @@
   "min_volume": 0.01,
   "max_volume": 500.0,
   "volume_step": 0.01,
-  "spread_points": 19.0,
+  "spread_points": 1.0,
   "commission_per_lot": 0.0,
   "swap_long": -0.7,
   "swap_short": -1.0,
