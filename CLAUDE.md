@@ -34,6 +34,35 @@ scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 scripts/run_backtest.py --list-strategies
 ```
 
+## The remote host
+
+A Vultr instance runs this code behind the Telegram assistant in `../agents`,
+and keeps its own backtest artifacts. Two `~/.ssh/config` aliases reach it:
+`vultr-trading-app` (the `trading` user — everything) and `vultr-trading`
+(root, provisioning only). `ssh -G vultr-trading-app` prints the address.
+
+Its runs sit at the same paths, under `~/trading_assistant/trading/`:
+
+| | |
+|---|---|
+| `runs/` | curated and reviewed — the evidence the assistant's `backtests.*` tools read |
+| `runs-adhoc/` | assistant-initiated; `provenance.json` marks each `reviewed: false` |
+
+That `runs/` is curated separately from this workstation's. The two holding
+different runs is the design, not drift — do not offer to sync them.
+
+Quickest read is the reports server on port **8083**, public and read-only, so
+it needs no ssh: `/` indexes every run, `/r/<run-id>/` is one. For raw numbers,
+`summary.json` in each run directory.
+
+```bash
+ssh vultr-trading-app 'ls -t trading_assistant/trading/runs-adhoc | head'
+```
+
+Its services are systemd **user** units — `systemctl --user`, never plain
+`systemctl`, which answers `not-found` for all of them and reads as a dead
+host. `../agents/deploy/README.md` covers operating them.
+
 ## Conventions
 
 - All datetimes are timezone-aware UTC. Bars carry their **open** time.
