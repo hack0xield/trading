@@ -24,7 +24,7 @@ from .margins import (
     validate_observation,
 )
 from .mz50 import CLOSE_ON_CANDIDATE_UPDATE, KEEP_OPEN, MZ50Params, MZ50Strategy
-from .report import build_payload, read_metrics, read_trades, render_chart, report_name, write_chart
+from .report import build_payload, read_metrics, read_trades, render_chart, write_chart
 from .rollover import RolloverPoint, RolloverTracker
 from .zones import (
     INITIAL,
@@ -43,6 +43,6 @@ __all__ = [
     "MarginLog", "MarginObservation", "MarginZones", "RolloverPoint",
     "RolloverTracker", "STRICT_EXTENSION", "ZONE_INPUT_CHANGE",
     "ZoneTracker", "ZoneVersion", "build_payload", "compute_zones", "list_specs",
-    "load_spec", "read_metrics", "read_trades", "render_chart", "report_name",
+    "load_spec", "read_metrics", "read_trades", "render_chart",
     "save_spec", "summarise", "validate_observation", "write_chart", "zone_spans",
 ]

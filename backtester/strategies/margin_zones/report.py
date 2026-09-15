@@ -26,19 +26,6 @@ STYLE_PATH = SCRIPTS / "chart_style.css"
 Span = tuple[ZoneVersion, int, int]
 
 
-def report_name(
-    symbol: str, timeframe: str, contract: str, deviation: str, stamp: datetime | None = None
-) -> str:
-    """`<UTC stamp>_zones_<symbol>_<tf>_<contract>_dev<n>`.
-
-    The timestamp leads so directories sort chronologically and a re-run never
-    overwrites an earlier one.
-    """
-    stamp = stamp or datetime.now(timezone.utc)
-    slug = deviation.replace(" ", "").replace("%", "pct").replace(".", "_")
-    return f"{stamp:%Y%m%d-%H%M%S}_zones_{symbol.upper()}_{timeframe.upper()}_{contract}_dev{slug}"
-
-
 def build_payload(
     symbol: str,
     timeframe: str,

@@ -1,7 +1,6 @@
 # Trading / backtesting workspace
 
-Offline backtesting of MetaTrader 5 symbols, plus the plumbing that fetches bars
-and posts scheduled signals.
+Offline backtesting of MetaTrader 5 symbols, plus the plumbing that fetches bars.
 
 | | |
 |---|---|
@@ -9,7 +8,6 @@ and posts scheduled signals.
 | `backtester/indicators/` | strategy-agnostic indicators (ZigZag) |
 | `backtester/strategies/margin_zones/` | CME margin turned into price levels, and what watches them |
 | `scripts/` | run, fetch, optimize, manage data, chart |
-| `signals/` | scheduled Telegram heartbeats over the same code |
 | `configs/` | run configs (YAML), contract specs, the broker clock |
 | `mt5-mcp-server/` | the live MT5 terminal as MCP tools |
 | `impl-spec/` | the specifications to build next |
@@ -29,7 +27,7 @@ them, so the package still imports in the Wine prefix where neither exists.
 ## Working here
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                    # 380 tests, ~3s
+.venv/bin/python -m pytest tests/ -q                    # 350 tests, ~3s
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 scripts/run_backtest.py --list-strategies
 ```

@@ -26,9 +26,8 @@ backtester/
   utils/        timeframes, time parsing, typed parameters
   cli.py        argument plumbing shared by the scripts
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
-signals/        scheduled Telegram heartbeats over the same code
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          380 tests, ~3s
+tests/          350 tests, ~3s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```

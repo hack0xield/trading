@@ -12,7 +12,7 @@ from backtester.indicators.zigzag import (
 )
 from backtester.strategies.margin_zones import (
     ContractSpec, MarginLog, MarginObservation, RolloverTracker, ZoneTracker,
-    compute_zones, report_name, summarise, zone_spans,
+    compute_zones, summarise, zone_spans,
 )
 
 UTC = timezone.utc
@@ -356,20 +356,3 @@ class TestRolloverTracker:
         bars += self.m15([99], start=datetime(2024, 1, 2, 1, 0, tzinfo=UTC))
         assert self.points(bars)[0].price == 13                        # before 01-02 00:00 UTC
         assert self.points(bars, rollover_tz="UTC+3")[0].price == 5    # before 01-01 21:00 UTC
-
-
-class TestReportName:
-    """Timestamp-first, so runs sort chronologically and never collide."""
-
-    def test_it_leads_with_a_utc_stamp_then_the_inputs(self):
-        name = report_name("EURUSD", "H4", "6E", "2%", stamp=T0)
-        assert name == "20240101-000000_zones_EURUSD_H4_6E_dev2pct"
-
-    def test_two_runs_a_second_apart_do_not_collide(self):
-        a = report_name("EURUSD", "H4", "6E", "2%", stamp=T0)
-        b = report_name("EURUSD", "H4", "6E", "2%", stamp=T0 + timedelta(seconds=1))
-        assert a != b
-        assert sorted([b, a]) == [a, b]      # chronological by string sort
-
-    def test_pips_thresholds_survive_the_slug(self):
-        assert report_name("EURUSD", "H4", "6E", "250 pips", stamp=T0).endswith("dev250pips")
