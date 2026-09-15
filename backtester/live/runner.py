@@ -17,11 +17,12 @@ replay to close it.
 Each new bar runs the engine's six steps split across the boundary: stops,
 targets and limit fills since the last bar are read back, `on_trade` and
 `on_bar` see the finished bar, then queued orders go out at the new open around
-`on_bar_open`.
+`on_bar_open`. Every poll rewrites `state.json`.
 """
 
 from __future__ import annotations
 
+import math
 import time as _time
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,14 @@ from ..core.strategy import Strategy
 from ..core.types import Bar, OrderRequest, Position, Side
 from ..data.loader import validate_bars
 from ..utils import timeframes
-from .broker import BrokerUnavailable, LiveBroker, comment_for
+from .broker import (
+    BrokerUnavailable,
+    LiveBroker,
+    comment_for,
+    order_row,
+    position_row,
+    trade_mode_name,
+)
 from .events import (
     BAR_CLOSED,
     ERROR,
@@ -44,10 +52,12 @@ from .events import (
     ORDER_FILLED,
     ORDER_INTENT,
     POSITION_CLOSED,
+    SHADOW,
     STARTED,
     STOPPED,
     Notifier,
 )
+from .state import DEFAULT_STALE_AFTER_DAYS, MarginWatch, StateFile
 
 
 class BarFeed(Protocol):
@@ -76,7 +86,10 @@ class LiveRunner:
         poll_seconds: float = 2.0,
         paper: bool = False,
         stop_file: str | Path | None = None,
+        state: StateFile | None = None,
+        margin_stale_days: int = DEFAULT_STALE_AFTER_DAYS,
         reconnect: Callable[[], None] | None = None,
+        reconnect_seconds: float = 30.0,
         log: Callable[[str], None] = print,
     ):
         self.mt5 = mt5
@@ -92,14 +105,23 @@ class LiveRunner:
         self.poll_seconds = poll_seconds
         self.paper = paper
         self.stop_file = Path(stop_file) if stop_file else None
+        self.state = state
+        self.margin = MarginWatch(strategy, margin_stale_days)
         self.reconnect = reconnect
+        self.reconnect_seconds = reconnect_seconds
         self.log = log
 
         self.backtest = Backtester(strategy, symbol, self.timeframe, instrument, execution, engine)
         self.bars: list[Bar] = []
         self.live: LiveBroker | None = None
+        self.login: int | None = None
+        self.account: dict | None = None
+        self.balance: float | None = None
+        self.equity: float | None = None
+        self.failure: str | None = None
         self._open_time: datetime | None = None
         self._seen_trades = 0
+        self._last_reconnect = -math.inf
 
     @property
     def ctx(self):
@@ -108,29 +130,41 @@ class LiveRunner:
     # -------------------------------------------------------------- lifecycle
 
     def run(self) -> None:
-        """Replay, then trade until the stop file appears or the process is interrupted."""
+        """Replay, then trade until the stop file appears or the process is interrupted.
+
+        A failure, at startup or later, is reported as an `error` event and in
+        the final state before it is raised.
+        """
         if self.stop_file is not None:
             self.stop_file.unlink(missing_ok=True)
-        self.warm_up()
         try:
+            self.warm_up()
             while not self._stop_requested():
                 try:
                     self.tick()
                 except BrokerUnavailable as exc:
-                    self.log(f"terminal unavailable: {exc}")
-                    self.notify.emit(ERROR, error=str(exc), retrying=True)
-                    self._reconnect()
+                    self._unavailable(exc)
+                self.write_state()
                 _time.sleep(self.poll_seconds)
         except KeyboardInterrupt:
             pass
         except Exception as exc:
-            self.notify.emit(ERROR, error=f"{type(exc).__name__}: {exc}", retrying=False)
+            self.failure = f"{type(exc).__name__}: {exc}"
+            self.notify.emit(ERROR, error=self.failure, retrying=False)
             raise
         finally:
             self.shutdown()
 
     def warm_up(self) -> None:
         """Replay history through the backtest, then hand over if the account agrees."""
+        info = self.mt5.account_info()
+        if info is None:
+            raise BrokerUnavailable(f"terminal not logged in: {self.mt5.last_error()}")
+        self.login = int(info.login)
+        self.account = {"login": self.login, "server": info.server,
+                        "trade_mode": trade_mode_name(self.mt5, info.trade_mode)}
+        self.balance, self.equity = float(info.balance), float(info.equity)
+
         bars = self.feed.history(self.start)
         if len(bars) < 2:
             raise ValueError(f"No closed {self.symbol} {self.timeframe} bars since {self.start}")
@@ -152,16 +186,19 @@ class LiveRunner:
             f"{len(sim.positions)} open, {len(sim.pending)} pending"
         )
         self.notify.emit(
-            STARTED, magic=self.magic, paper=self.paper, replay_from=bars[0].time,
-            last_closed_bar=bars[-1].time, replay_trades=len(sim.trades),
-            replay_open=[_held(p) for p in sim.positions],
-            replay_pending=[_order(o) for o in sim.pending],
+            STARTED, magic=self.magic, paper=self.paper, account=self.account,
+            replay_from=bars[0].time, last_closed_bar=bars[-1].time,
+            replay_trades=len(sim.trades), replay_open=[position_row(p) for p in sim.positions],
+            replay_pending=[order_row(o) for o in sim.pending], margin=self.margin.status(),
         )
         if not self.paper:
             self._handover(at_startup=True)
+        self.write_state()
 
     def tick(self) -> None:
         """One poll: settle newly closed bars and the new open, or watch the one in progress."""
+        if self.live is None:
+            self._read_account()
         latest = self._latest()
         forming = latest[-1]
         for bar in latest[:-1]:
@@ -186,7 +223,12 @@ class LiveRunner:
                 self.log(f"could not withdraw resting orders: {exc}")
         if self.stop_file is not None:
             self.stop_file.unlink(missing_ok=True)
-        self.notify.emit(STOPPED)
+        self.notify.emit(STOPPED, failure=self.failure)
+        self.write_state(running=False)
+
+    def write_state(self, running: bool = True) -> None:
+        if self.state is not None:
+            self.state.write(running=running, failure=self.failure, **self._snapshot())
 
     # --------------------------------------------------------------- the bars
 
@@ -216,21 +258,24 @@ class LiveRunner:
         new_trades = sim.trades[closed_before:]
         for position in sim.positions:
             if position.id not in held:
-                self.notify.emit(ORDER_FILLED, **_held(position))
+                self.notify.emit(ORDER_FILLED, **position_row(position))
         for trade in new_trades:
             if trade.id not in held:
                 self.notify.emit(ORDER_FILLED, ticket=trade.id, side=trade.side,
-                                 price=trade.entry_price, tag=trade.tag)
-            self.notify.emit(POSITION_CLOSED, **trade.as_row())
+                                 volume=trade.volume, price=trade.entry_price, sl=trade.sl,
+                                 tp=trade.tp, tag=trade.tag, entry_time=trade.entry_time)
+            self.notify.emit(POSITION_CLOSED, **trade.as_row(), ticket=trade.id)
         for order in sim.pending:
             if order.created_at == bar.time:
-                self.notify.emit(ORDER_INTENT, **_order(order))
+                self.notify.emit(ORDER_INTENT, **order_row(order))
         self._bar_closed(bar, sim.balance, sim.equity, len(sim.positions))
 
     def _live_close(self, bar: Bar) -> None:
         """Engine steps 4-6 for a bar the account has just lived through."""
         live, ctx = self.live, self.ctx
         live.sync()                      # raises, untouched, when the terminal is away
+        live.retry()
+        live.expire_queued()
         self.bars.append(bar)
         ctx.now, ctx.bar = bar.time, bar
         live.void_reached(bar.high, bar.low)
@@ -249,17 +294,18 @@ class LiveRunner:
         live, ctx = self.live, self.ctx
         price = live.tick().bid
         ctx.now, ctx.price = forming.time, price
-        live.execute_pending()
+        live.execute_pending(resend=False)
         self.strategy.on_bar_open(ctx, BarOpen(time=forming.time, price=price))
-        live.execute_pending()
+        live.execute_pending(resend=False)
 
     def _watch(self) -> None:
-        """Between bars: read fills and closes as they happen, and void levels."""
+        """Between bars: read back fills and closes, retry what is owed, watch void levels."""
         live = self.live
         live.sync()
+        live.retry()
         tick = live.tick()
         live.void_reached(tick.bid, tick.bid)
-        live.execute_pending()           # anything an earlier open could not send
+        live.execute_pending()
 
     def _flush_trades(self) -> None:
         for trade in self.live.trades[self._seen_trades:]:
@@ -279,8 +325,8 @@ class LiveRunner:
         open has already passed, so the runner waits for the next boundary.
         """
         sim = self.backtest.broker
-        live = LiveBroker(self.mt5, self.symbol, self.instrument, self.magic, self.notify,
-                          self.deviation)
+        live = LiveBroker(self.mt5, self.symbol, self.instrument, self.magic, self.login,
+                          self.notify, self.deviation)
         rows, order_rows = live.our_positions(), live.our_orders()
 
         held, spare = _pair(sim.positions, rows, self._same_position)
@@ -311,7 +357,7 @@ class LiveRunner:
                          adopted_orders=[r.ticket for _, r in resting],
                          closed_leftovers=[r.ticket for r in spare],
                          removed_leftovers=[r.ticket for r in spare_orders],
-                         queued=[_order(o) for o in unsent])
+                         queued=[order_row(o) for o in unsent])
         self.log(f"trading live on magic {self.magic}")
         return True
 
@@ -330,18 +376,62 @@ class LiveRunner:
         return (int(row.type) == kind and row.comment == comment_for(order.tag)
                 and abs(float(row.price_open) - order.limit_price) < self.instrument.tick_size / 2)
 
+    # ----------------------------------------------------------------- state
+
+    def _snapshot(self) -> dict:
+        snapshot = {
+            "mode": LIVE if self.live is not None else SHADOW,
+            "paper": self.paper,
+            "account": self.account,
+            "last_closed_bar": self.bars[-1].time if self.bars else None,
+            "forming_bar": self._open_time,
+            "margin": self.margin.status(),
+        }
+        if self.live is not None:
+            live = self.live
+            return {**snapshot, "balance": live.balance, "equity": live.equity,
+                    "source": "account", "positions": live.position_rows(),
+                    "resting_orders": live.resting_rows(), "queued_orders": live.queued_rows()}
+
+        # The replay's book, priced at the last close: nothing here is on the account.
+        sim = getattr(self.backtest, "broker", None)
+        positions, resting, queued = [], [], []
+        if sim is not None and self.bars:
+            last = self.bars[-1]
+            for p in sim.positions:
+                exit_price = last.close if p.side is Side.BUY else sim.ask(last.close, last)
+                profit = sim.instrument.value_of((exit_price - p.entry_price) * p.side.sign,
+                                                 p.volume)
+                positions.append({**position_row(p), "profit": round(profit, 2)})
+            for order in sim.pending:
+                if order.limit_price is None:
+                    queued.append(order_row(order))
+                else:
+                    resting.append({"ticket": None, **order_row(order)})
+        return {**snapshot, "balance": self.balance, "equity": self.equity, "source": "replay",
+                "positions": positions, "resting_orders": resting, "queued_orders": queued}
+
+    def _read_account(self) -> None:
+        """The account's balance and equity, while no live broker is reading them."""
+        info = self.mt5.account_info()
+        if info is not None and int(info.login) == self.login:
+            self.balance, self.equity = float(info.balance), float(info.equity)
+
     # ------------------------------------------------------------------ misc
+
+    def _unavailable(self, exc: BrokerUnavailable) -> None:
+        self.notify.emit(ERROR, error=str(exc), retrying=True, **exc.detail)
+        now = _time.monotonic()
+        if self.reconnect is None or now - self._last_reconnect < self.reconnect_seconds:
+            return
+        self._last_reconnect = now
+        try:
+            self.reconnect()
+        except (Exception, SystemExit) as failed:
+            self.log(f"reconnect failed: {failed}")
 
     def _stop_requested(self) -> bool:
         return self.stop_file is not None and self.stop_file.exists()
-
-    def _reconnect(self) -> None:
-        if self.reconnect is None:
-            return
-        try:
-            self.reconnect()
-        except (Exception, SystemExit) as exc:
-            self.log(f"reconnect failed: {exc}")
 
 
 def _pair(items: list, rows: list, same) -> tuple[list[tuple], list]:
@@ -354,16 +444,3 @@ def _pair(items: list, rows: list, same) -> tuple[list[tuple], list]:
             left.remove(row)
             pairs.append((item, row))
     return pairs, left
-
-
-def _held(position: Position) -> dict:
-    return {"ticket": position.id, "side": position.side, "volume": position.volume,
-            "price": position.entry_price, "sl": position.sl, "tp": position.tp,
-            "tag": position.tag, "entry_time": position.entry_time}
-
-
-def _order(order: OrderRequest) -> dict:
-    return {"side": order.side, "volume": order.volume,
-            "order": "limit" if order.limit_price is not None else "market",
-            "limit": order.limit_price, "sl": order.sl_price, "tp": order.tp_price,
-            "tag": order.tag, "signal_time": order.created_at}

@@ -28,7 +28,7 @@ backtester/
   cli.py        argument plumbing shared by the scripts
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          381 tests, ~3s
+tests/          408 tests, ~5s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -242,7 +242,6 @@ unchanged.
 ```bash
 scripts/run-live.sh --config configs/strategies/mz50.yaml            # a demo account
 scripts/run-live.sh --config configs/strategies/mz50.yaml --paper    # sends nothing
-scripts/run-live.sh -c configs/strategies/mz50.yaml --webhook http://127.0.0.1:9000/mz50
 ```
 
 It runs under the Wine Python, needs the terminal logged in with Algo Trading
@@ -274,18 +273,113 @@ never touched.
 Stopping leaves positions under their server-side stops and removes resting
 limit orders, whose void level needs the process.
 
+**One account.** The runner records the login it started on. Before every
+send (entry, limit, stop move, close, removal), and every time it reads the
+account back, it checks the terminal is still on that login. If not, nothing is
+sent, an `error` carries `expected_login` and `actual_login`, and the runner
+treats the terminal as unavailable: queued orders stay queued and the run loop
+logs back in.
+
+**When the terminal gives no answer.** An `order_send` that returns nothing
+may still have reached the broker, so it is never counted as rejected. The
+runner looks for it at the broker, by magic number and tag, among positions,
+resting orders and the recent deals, and adopts it if it is there. If not, the
+order stays queued and is sent again on the next poll; one still unsent when
+its bar ends is rejected with a reason that says so. Closes, stop moves and
+removals that get no answer are retried the same way until the broker shows
+them done. Only a definite refusal is an immediate `order_rejected`. A position
+or order under the magic number that the runner does not track is reported as
+an `error`, once, and left alone.
+
+The login is tried first from a separate process, `--connect-timeout` seconds
+at most (default 120): a terminal that hangs holds the Python interpreter lock
+for as long as it hangs, so nothing inside the runner could time it out. A
+terminal that freezes mid-run freezes the runner with it; `state.json` then
+stops updating, which is how to tell.
+
+**Startup failures are written down.** Once the config names the strategy and
+symbol, the session directory exists, and any failure after that (terminal not
+answering or not logged in, Algo Trading off, a real account refused, the
+instrument's digits disagreeing with the broker's, no bars, bad bars, anything
+raised during the replay) leaves an `error` event with `retrying: false` and a
+`state.json` with `running: false` and the reason in `failure`, then exits 1.
+A config that cannot be read, or an unknown strategy, exits 1 with the reason on
+stderr and no session.
+
+**Margin data.** A margin reading older than `--margin-stale-days` (default 30)
+is reported as stale in `started` and `state.json`, and does not stop the
+runner. The log is read again whenever it changes, so adding a reading clears
+the warning without a restart.
+
 **Events.** Every order is announced before it is sent (`order_intent`,
-`exit_intent`) and again when the broker answers (`order_filled`,
-`order_placed`, `order_rejected`, `order_cancelled`, `position_modified`,
-`position_closed`), along with `bar_closed`, `mode`, `started`, `stopped` and
-`error`. Each carries its `mode`, so a shadow fill is never mistaken for a real
-one. They go to the console, to
-`runs-live/<strategy>_<symbol>_<magic>/events.jsonl`, and as JSON to every
-`--webhook`. In code, a listener is any callable taking an `Event`:
+`exit_intent`) and again when the broker answers. Events go to the console and
+to `events.jsonl`. In code, a listener is any callable taking an `Event`:
 
 ```python
 runner.notify.add(lambda event: print(event.kind, event.data))
 ```
+
+An `error` the runner carries on through is delivered once, not again while the
+same message repeats within five minutes.
+
+### The session, as reporting reads it
+
+Written for the Telegram assistant in `../agents`, which starts and stops
+runners and reports on them. This is what both repositories rely on.
+
+**Where.** `runs-live/<strategy>_<symbol>_<magic>/`, holding `events.jsonl` and
+`state.json`. Sessions are found by scanning `runs-live/*/state.json` and
+matching `config`. The magic number defaults to a hash of strategy and symbol,
+so a restart finds its own session.
+
+**Stopping.** SIGTERM to `run-live.sh` (Ctrl-C does the same). It creates the
+stop file, and the runner withdraws resting orders, emits `stopped` and writes
+its final `state.json` within a poll. If the runner has not exited after 60
+seconds (`RUN_LIVE_GRACE`), the wrapper kills that runner and no other. A
+supervisor's stop timeout belongs above 60 seconds.
+
+**Exit status.** 0 after a requested stop; 1 on failure, including a runner the
+wrapper had to kill.
+
+**`state.json`**, replaced whole (temporary file and rename) on every poll and
+once more on exit:
+
+| field | |
+|---|---|
+| `updated_at` | the heartbeat; stale while `running` means the runner is stuck |
+| `running`, `started_at`, `stopped_at` | `running` is false only in the final write |
+| `pid` | `run-live.sh`'s process id, the one to signal |
+| `strategy`, `symbol`, `timeframe`, `config`, `magic`, `paper` | the session; `config` is the path as given |
+| `mode` | `shadow` or `live`; null until the replay is done |
+| `account` | `login`, `server`, `trade_mode` (`demo`, `contest`, `REAL`) |
+| `last_closed_bar`, `forming_bar` | bar open times, on the broker's clock |
+| `balance`, `equity` | the account's |
+| `source` | `account`, or `replay` while in shadow: then the positions and orders below are the backtest's and none is on the account |
+| `positions` | `ticket`, `side`, `volume`, `price` (entry), `sl`, `tp`, `tag`, `entry_time`, `profit` (floating, null until read) |
+| `resting_orders` | `ticket`, `side`, `volume`, `limit`, `sl`, `tp`, `tag`, `void`, `withdrawing` |
+| `queued_orders` | `side`, `volume`, `order` (`market`/`limit`), `limit`, `sl`, `tp`, `void`, `tag`, `signal_time`, and live `unanswered`, `problem` |
+| `margin` | `contract`, `as_of`, `maintenance`, `age_days`, `stale`, `stale_after_days`; null for a strategy without a margin log |
+| `last_error` | `time` and `error` of the latest `error` event, or null |
+| `failure` | why the runner stopped on its own, or null |
+
+**Events**, one JSON object per line. Every one carries `time` (UTC, when
+emitted), `kind`, `mode` (`shadow` or `live`), `strategy` and `symbol`:
+
+| kind | fields |
+|---|---|
+| `started` | `magic`, `paper`, `account`, `replay_from`, `last_closed_bar`, `replay_trades`, `replay_open` (positions), `replay_pending` (orders), `margin` |
+| `mode` | the switch to live: `adopted_positions`, `adopted_orders`, `closed_leftovers`, `removed_leftovers` (tickets), `queued` (orders) |
+| `bar_closed` | `bar_time`, `close`, `balance`, `equity`, `open_positions`; the replay's figures in shadow |
+| `order_intent` | about to be sent: `side`, `volume`, `order`, `tag`, `signal_time`, `sl`, `tp`, and `limit` for a limit order or, live, `price` for a market one |
+| `order_placed` | a limit resting at the broker: the intent's fields and `ticket` |
+| `order_filled` | a position opened: `ticket`, `side`, `volume`, `price`, `sl`, `tp`, `tag`, `entry_time` |
+| `order_rejected` | an entry's fields and `reason`; or, for an open position's request, `ticket`, `action` (`close`, `modify`, `remove`) and `reason` |
+| `order_cancelled` | the order's fields, `ticket` if it rested, and `reason` |
+| `position_modified` | `ticket`, `sl_from`, `sl`, `tp_from`, `tp` |
+| `exit_intent` | a close about to be sent: `ticket`, `side`, `volume`, `price`, `reason`, `tag` |
+| `position_closed` | the trade: `ticket`, `side`, `volume`, `entry_time`, `entry_price`, `exit_time`, `exit_price`, `reason` (`STOP_LOSS`, `TAKE_PROFIT`, `STRATEGY`, `MARGIN_CALL`), `gross_pnl`, `commission`, `swap`, `net_pnl`, `sl`, `tp`, `tag`, and more; a position closed for not being the strategy's carries only `ticket`, `side`, `volume`, `tag` and `leftover: true` |
+| `error` | `error`, `retrying` (true while the runner carries on); `expected_login`, `actual_login` for another account; `ticket` and the row's details for an untracked position or order |
+| `stopped` | `failure`, null after a requested stop |
 
 `tests/test_live.py` holds the runner to the backtest. Against a fake terminal
 that resolves stops, targets and limits by the simulated broker's rules, every

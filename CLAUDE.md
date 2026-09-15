@@ -28,11 +28,31 @@ them, so the package still imports in the Wine prefix where neither exists.
 ## Working here
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                    # 381 tests, ~3s
+.venv/bin/python -m pytest tests/ -q                    # 408 tests, ~5s
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 scripts/run_backtest.py --list-strategies
 scripts/run-live.sh --config configs/strategies/mz50.yaml --paper    # Wine; drop --paper to trade
 ```
+
+## The live runner
+
+`scripts/run-live.sh` trades a run config on the account in
+`mt5-mcp-server/config.json`, and `../agents` starts, stops and reports on it.
+The README's "Trading it live" section is the contract between the two; keep it
+true when changing `backtester/live/` or the scripts.
+
+- **Session**: `runs-live/<strategy>_<symbol>_<magic>/` holds `events.jsonl`
+  and `state.json`, the snapshot rewritten on every poll. `updated_at` is the
+  heartbeat; in shadow the file's positions are the replay's (`source`).
+- **Account guard**: nothing is sent unless the terminal is still on the login
+  the runner started with. A mismatch is an `error` and a retry, never a
+  rejection. An unanswered send is looked for at the broker before it is
+  counted or sent again.
+- **Startup failures**: once the session is known, every failure leaves an
+  `error` event with `retrying: false` and a `state.json` with
+  `running: false` and `failure`, then exit 1. The terminal login is probed in
+  a child process first, since a hung terminal holds the interpreter lock.
+- **Stop**: SIGTERM to the wrapper; exit 0 after a requested stop.
 
 ## The remote host
 

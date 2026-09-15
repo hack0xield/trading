@@ -3,18 +3,17 @@
 A listener is any callable taking an `Event`. It is told before an order goes
 to the broker (`order_intent`, `exit_intent`) and again once the broker has
 answered. A listener that raises is reported and skipped, never allowed to
-stop the trading loop.
+stop the trading loop. An `error` the runner carries on through is delivered
+once, not again while it keeps repeating.
 """
 
 from __future__ import annotations
 
 import json
-import queue
 import sys
-import threading
-import urllib.request
+import time as _time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Callable
@@ -68,17 +67,29 @@ Listener = Callable[[Event], None]
 class Notifier:
     """Fans events out to every registered listener."""
 
+    #: Seconds before the same retrying error is delivered again.
+    REPEAT_AFTER = 300.0
+
     def __init__(self, strategy: str, symbol: str, listeners: list[Listener] | None = None):
         self.strategy = strategy
         self.symbol = symbol
         self.mode = SHADOW
         self.listeners: list[Listener] = list(listeners or [])
+        self._last_error: tuple[str, float] | None = None
 
     def add(self, listener: Listener) -> None:
         self.listeners.append(listener)
 
-    def emit(self, kind: str, **data) -> Event:
-        event = Event(kind, self.mode, self.strategy, self.symbol, _plain(data))
+    def emit(self, kind: str, **data) -> Event | None:
+        """Deliver an event; None when it repeats the retrying error just delivered."""
+        if kind == ERROR and data.get("retrying"):
+            now = _time.monotonic()
+            message = str(data.get("error"))
+            if self._last_error and self._last_error[0] == message \
+                    and now - self._last_error[1] < self.REPEAT_AFTER:
+                return None
+            self._last_error = (message, now)
+        event = Event(kind, self.mode, self.strategy, self.symbol, json_safe(data))
         for listener in self.listeners:
             try:
                 listener(event)
@@ -87,13 +98,13 @@ class Notifier:
         return event
 
 
-def _plain(value):
-    """JSON-safe copy: datetimes as ISO strings, enums as their values."""
+def json_safe(value):
+    """JSON-safe copy: datetimes and dates as ISO strings, enums as their values."""
     if isinstance(value, dict):
-        return {k: _plain(v) for k, v in value.items()}
+        return {k: json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    if isinstance(value, datetime):
+        return [json_safe(v) for v in value]
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Enum):
         return value.value
@@ -125,35 +136,3 @@ class JsonlListener:
     def __repr__(self) -> str:
         return f"JsonlListener({self.path})"
 
-
-class WebhookListener:
-    """POSTs each event as JSON from a background thread.
-
-    The thread keeps a slow or dead endpoint from delaying an order.
-    """
-
-    def __init__(self, url: str, kinds: set[str] | None = None, timeout: float = 10.0):
-        self.url = url
-        self.kinds = kinds
-        self.timeout = timeout
-        self._queue: queue.Queue = queue.Queue()
-        threading.Thread(target=self._drain, name="webhook", daemon=True).start()
-
-    def __call__(self, event: Event) -> None:
-        if self.kinds is None or event.kind in self.kinds:
-            self._queue.put(event.as_dict())
-
-    def _drain(self) -> None:
-        while True:
-            payload = self._queue.get()
-            request = urllib.request.Request(
-                self.url, data=json.dumps(payload).encode(),
-                headers={"content-type": "application/json"}, method="POST",
-            )
-            try:
-                urllib.request.urlopen(request, timeout=self.timeout).close()
-            except Exception as exc:
-                print(f"[live] webhook {self.url} failed: {exc}", file=sys.stderr)
-
-    def __repr__(self) -> str:
-        return f"WebhookListener({self.url})"

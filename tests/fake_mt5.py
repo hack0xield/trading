@@ -3,6 +3,11 @@
 Market orders fill at the quote. `walk` plays a closed bar through the server
 using `SimulatedBroker`'s own rules for stops, targets and limit fills, so a
 live run against it can be compared with the backtest trade for trade.
+
+`login` is the account the terminal is on, and `silence` queues what the next
+sends do instead of answering: "lost" carries a send out and returns None,
+"late" does the same but only once `catch_up` is called, and "unsent" returns
+None without it.
 """
 
 from __future__ import annotations
@@ -31,6 +36,8 @@ class FakeMT5:
     ORDER_STATE_FILLED = 4
     POSITION_TYPE_BUY = 0
     POSITION_TYPE_SELL = 1
+    DEAL_TYPE_BUY = 0
+    DEAL_TYPE_SELL = 1
     DEAL_ENTRY_IN = 0
     DEAL_ENTRY_OUT = 1
     DEAL_ENTRY_OUT_BY = 3
@@ -61,7 +68,12 @@ class FakeMT5:
         self.deals: list[Row] = []
         self.requests: list[dict] = []
         self.reject_next = False
+        self.silence: list[str] = []
+        self._late: list[dict] = []
         self.online = True
+        self.login = 1
+        self.trade_mode = self.ACCOUNT_TRADE_MODE_DEMO
+        self.algo_trading = True
         self._ticket = 1000
 
     # ------------------------------------------------------------- the market
@@ -108,14 +120,23 @@ class FakeMT5:
     def last_error(self):
         return (1, "Success") if self.online else (-10004, "No IPC connection")
 
+    def initialize(self, **kwargs):
+        return self.online
+
+    def shutdown(self):
+        return True
+
     def account_info(self):
         if not self.online:
             return None
-        return Row(login=1, server="Fake", balance=self.balance, equity=self.balance,
-                   trade_mode=self.ACCOUNT_TRADE_MODE_DEMO, trade_allowed=True)
+        return Row(login=self.login, server="Fake", balance=self.balance, equity=self.balance,
+                   trade_mode=self.trade_mode, trade_allowed=True)
+
+    def terminal_info(self):
+        return Row(trade_allowed=self.algo_trading, connected=self.online) if self.online else None
 
     def symbol_info(self, symbol):
-        return Row(name=symbol, digits=self.instrument.digits, filling_mode=2)
+        return Row(name=symbol, digits=self.instrument.digits, filling_mode=2, visible=True)
 
     def symbol_info_tick(self, symbol):
         if not self.online:
@@ -125,8 +146,12 @@ class FakeMT5:
     def positions_get(self, symbol=None, ticket=None):
         if not self.online:
             return None
-        rows = list(self.positions.values())
-        return tuple(r for r in rows if ticket is None or r.ticket == ticket)
+        rows = [r for r in self.positions.values() if ticket is None or r.ticket == ticket]
+        for row in rows:
+            exit_price = self.bid if row.type == self.ORDER_TYPE_BUY else self.ask
+            sign = 1 if row.type == self.ORDER_TYPE_BUY else -1
+            row.profit = self.instrument.value_of((exit_price - row.price_open) * sign, row.volume)
+        return tuple(rows)
 
     def orders_get(self, symbol=None):
         return tuple(self.orders.values()) if self.online else None
@@ -135,13 +160,29 @@ class FakeMT5:
         found = self.order_history.get(ticket)
         return (found,) if found else ()
 
-    def history_deals_get(self, ticket=None, position=None):
+    def history_deals_get(self, date_from=None, date_to=None, ticket=None, position=None):
         return tuple(d for d in self.deals
                      if (ticket is None or d.ticket == ticket)
                      and (position is None or d.position_id == position))
 
     def order_send(self, request: dict):
         self.requests.append(dict(request))
+        if self.silence:
+            mode = self.silence.pop(0)
+            if mode == "lost":
+                self._carry_out(request)
+            elif mode == "late":
+                self._late.append(request)
+            return None
+        return self._carry_out(request)
+
+    def catch_up(self) -> None:
+        """Carry out the sends held back as "late"."""
+        for request in self._late:
+            self._carry_out(request)
+        self._late.clear()
+
+    def _carry_out(self, request: dict):
         if self.reject_next:
             self.reject_next = False
             return Row(retcode=self.TRADE_RETCODE_REJECT, comment="Request rejected",
@@ -184,10 +225,11 @@ class FakeMT5:
     def _open(self, kind, volume, price, sl, tp, magic, comment, time, order):
         ticket = order or self._next()
         stamp = int(time.timestamp()) if time else self.time
-        deal = self._deal(ticket, ticket, self.DEAL_ENTRY_IN, kind, volume, price, 0.0, stamp, 0)
+        deal = self._deal(ticket, ticket, self.DEAL_ENTRY_IN, kind, volume, price, 0.0, stamp, 0,
+                          magic, comment)
         row = Row(ticket=ticket, type=kind, volume=volume, price_open=price, sl=sl, tp=tp,
-                  time=stamp, magic=magic, comment=comment, swap=0.0, symbol=self.symbol,
-                  deal=deal.ticket)
+                  time=stamp, magic=magic, comment=comment, swap=0.0, profit=0.0,
+                  symbol=self.symbol, deal=deal.ticket)
         self.positions[ticket] = row
         return row
 
@@ -198,12 +240,14 @@ class FakeMT5:
         self.balance += profit
         stamp = int(time.timestamp()) if time else self.time
         return self._deal(self._next(), row.ticket, self.DEAL_ENTRY_OUT, 1 - row.type,
-                          row.volume, price, profit, stamp, reason)
+                          row.volume, price, profit, stamp, reason, row.magic, row.comment)
 
-    def _deal(self, order, position, entry, kind, volume, price, profit, time, reason):
+    def _deal(self, order, position, entry, kind, volume, price, profit, time, reason,
+              magic, comment):
         deal = Row(ticket=self._next(), order=order, position_id=position, entry=entry, type=kind,
                    volume=volume, price=price, profit=profit, commission=0.0, swap=0.0,
-                   fee=0.0, time=time, reason=reason, symbol=self.symbol)
+                   fee=0.0, time=time, reason=reason, magic=magic, comment=comment,
+                   symbol=self.symbol)
         self.deals.append(deal)
         return deal
 
