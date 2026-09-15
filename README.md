@@ -22,12 +22,13 @@ backtester/
   data/         bar storage: csv / parquet / sql behind one interface  (see data/README.md)
   indicators/   strategy-agnostic indicators (ZigZag)
   strategies/   strategy implementations + the name registry
+  live/         the same strategy trading an MT5 account, bar by bar
   metrics/      performance statistics, the casebook, report rendering
   utils/        timeframes, time parsing, typed parameters
   cli.py        argument plumbing shared by the scripts
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          350 tests, ~3s
+tests/          381 tests, ~3s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -231,6 +232,66 @@ Three things the specification leaves open, decided here:
 
 The five review columns (`BE Reason`, `News Event`, `Mistake`, `To Improve`,
 `Needs validation`) are written empty. No backtest can fill them.
+
+## Trading it live
+
+`scripts/run-live.sh` trades a run config on the MT5 account until stopped. It
+takes the backtest's own config, and the strategy object is the backtest's own,
+unchanged.
+
+```bash
+scripts/run-live.sh --config configs/strategies/mz50.yaml            # a demo account
+scripts/run-live.sh --config configs/strategies/mz50.yaml --paper    # sends nothing
+scripts/run-live.sh -c configs/strategies/mz50.yaml --webhook http://127.0.0.1:9000/mz50
+```
+
+It runs under the Wine Python, needs the terminal logged in with Algo Trading
+on, and refuses a real-money account unless given `--allow-real`.
+
+**Startup replays history.** Every bar from the config's `start` goes through
+the backtest engine, so the strategy reaches today holding exactly the zones,
+crossings and chain the backtest holds. Then, on every new H4 bar, the
+engine's six steps run in the engine's order, split across the bar boundary:
+
+| when | what |
+|---|---|
+| the bar closes | read back stops, targets and limit fills; `on_trade`; `on_bar` |
+| the next bar opens | send queued orders; `on_bar_open`; send what it queued |
+
+Orders therefore fill at the next open, as in the backtest. The account's server
+holds each position's stop and target. A limit order's void level is watched
+from this side, on every poll and against each closed bar.
+
+**Shadow, then live.** The runner trades live only when the account holds what
+the replay holds. Until then it is in *shadow*: the backtest keeps stepping live
+bars and nothing is sent. A replayed position the account lacks is never opened
+late; the runner waits for the replay to close it and hands over at the next
+open. Positions and orders carrying the runner's magic number are adopted when
+they match the replay (the same side and tag), and closed or cancelled when
+they do not. That makes a restart safe. Anything without the magic number is
+never touched.
+
+Stopping leaves positions under their server-side stops and removes resting
+limit orders, whose void level needs the process.
+
+**Events.** Every order is announced before it is sent (`order_intent`,
+`exit_intent`) and again when the broker answers (`order_filled`,
+`order_placed`, `order_rejected`, `order_cancelled`, `position_modified`,
+`position_closed`), along with `bar_closed`, `mode`, `started`, `stopped` and
+`error`. Each carries its `mode`, so a shadow fill is never mistaken for a real
+one. They go to the console, to
+`runs-live/<strategy>_<symbol>_<magic>/events.jsonl`, and as JSON to every
+`--webhook`. In code, a listener is any callable taking an `Event`:
+
+```python
+runner.notify.add(lambda event: print(event.kind, event.data))
+```
+
+`tests/test_live.py` holds the runner to the backtest. Against a fake terminal
+that resolves stops, targets and limits by the simulated broker's rules, every
+scenario produces the same trades, the same stops and the same records. Run
+the same way over EUR/USD 2022-2026 with `mz50.yaml`, all 91 trades after a
+2023 handover match the backtest's.
 
 ## Writing another strategy
 

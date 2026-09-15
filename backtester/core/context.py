@@ -189,10 +189,7 @@ class Context:
 
     def modify(self, position: Position, sl: float | None = None, tp: float | None = None) -> None:
         """Move a stop or target — the hook a trailing stop hangs off."""
-        if sl is not None:
-            position.sl = self.instrument.round_price(sl)
-        if tp is not None:
-            position.tp = self.instrument.round_price(tp)
+        self.broker.modify(position, sl, tp)
 
     # -------------------------------------------------------------------- log
 

@@ -7,6 +7,7 @@ Offline backtesting of MetaTrader 5 symbols, plus the plumbing that fetches bars
 | `backtester/` | the engine: bar loop, broker simulation, metrics, strategies |
 | `backtester/indicators/` | strategy-agnostic indicators (ZigZag) |
 | `backtester/strategies/margin_zones/` | CME margin turned into price levels, and what watches them |
+| `backtester/live/` | a strategy trading the MT5 account bar by bar, and its order events |
 | `scripts/` | run, fetch, optimize, manage data, chart |
 | `configs/` | run configs (YAML), contract specs, the broker clock |
 | `mt5-mcp-server/` | the live MT5 terminal as MCP tools |
@@ -17,8 +18,8 @@ Offline backtesting of MetaTrader 5 symbols, plus the plumbing that fetches bars
 
 `MetaTrader5` is Windows-only: it talks to `terminal64.exe` over a named pipe
 and cannot be imported from Linux. Anything touching the live terminal runs on
-Wine Python (`~/.mt5/drive_c/Python311`, via `run-server.sh` and
-`fetch-mt5.sh`); everything else runs on Linux Python 3.10+.
+Wine Python (`~/.mt5/drive_c/Python311`, via `run-server.sh`,
+`fetch-mt5.sh` and `run-live.sh`); everything else runs on Linux Python 3.10+.
 
 `backtester/` core code therefore stays **standard-library only**. Storage
 backends import pyarrow / SQLAlchemy lazily, inside the function that needs
@@ -27,9 +28,10 @@ them, so the package still imports in the Wine prefix where neither exists.
 ## Working here
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                    # 350 tests, ~3s
+.venv/bin/python -m pytest tests/ -q                    # 381 tests, ~3s
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 scripts/run_backtest.py --list-strategies
+scripts/run-live.sh --config configs/strategies/mz50.yaml --paper    # Wine; drop --paper to trade
 ```
 
 ## The remote host

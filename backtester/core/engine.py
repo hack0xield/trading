@@ -56,64 +56,84 @@ class Backtester:
         if not bars:
             raise ValueError(f"No bars to backtest for {self.symbol} {self.timeframe}")
 
-        broker = SimulatedBroker(self.instrument, self.execution)
-        logs: list[str] = []
-        history = BarHistory(bars)
-        ctx = Context(broker, self.symbol, self.timeframe, history, logs)
-
-        started = _time.perf_counter()
-        seen_trades = 0
-        warmup = max(0, self.config.warmup_bars)
-
-        self.strategy.on_start(ctx)
-
-        for index, bar in enumerate(bars):
-            ctx.now = bar.time
-            ctx.bar = bar
-            ctx.price = bar.open
-
-            # 1. Orders queued at the previous close fill here, at this open.
-            broker.fill_pending(bar.open, bar.time, bar)
-
-            if index >= warmup:
-                # 2 + 3. Decide on the open, then fill at that same open.
-                self.strategy.on_bar_open(ctx, BarOpen(time=bar.time, price=bar.open))
-                broker.fill_pending(bar.open, bar.time, bar)
-
-            # 4. Advance positions through the bar's range.
-            broker.process_bar(bar)
-
-            # The bar is now finished, so the close is the tradeable price.
-            ctx.price = bar.close
-            history._advance(index + 1)
-
-            seen_trades = self._flush_trades(ctx, broker, seen_trades)
-
-            # 5. React to the closed bar; orders wait for the next open.
-            if index >= warmup:
-                self.strategy.on_bar(ctx, bar)
-                seen_trades = self._flush_trades(ctx, broker, seen_trades)
-
-            # 6.
-            broker.record_equity(bar)
-
-            if self.config.progress_every and index % self.config.progress_every == 0:
+        self.start(bars)
+        while self.processed < len(bars):
+            bar = self.step()
+            every = self.config.progress_every
+            if every and (self.processed - 1) % every == 0:
                 print(
                     f"  {bar.time:%Y-%m-%d %H:%M}  "
-                    f"equity={broker.equity:,.2f}  trades={len(broker.trades)}",
+                    f"equity={self.broker.equity:,.2f}  trades={len(self.broker.trades)}",
                     flush=True,
                 )
-
-            if broker.stopped_out:
-                logs.append(f"{bar.time.isoformat()}  stopped out, halting run")
+            if self.broker.stopped_out:
+                self.logs.append(f"{bar.time.isoformat()}  stopped out, halting run")
                 break
+        return self.finish()
 
-        last = bars[min(index, len(bars) - 1)]
+    def start(self, bars: list[Bar]) -> Context:
+        """Prepare a run over `bars` and call `on_start`.
+
+        The list is read by reference, so bars appended later can still be stepped.
+        """
+        self.bars = bars
+        self.broker = SimulatedBroker(self.instrument, self.execution)
+        self.logs: list[str] = []
+        self.history = BarHistory(bars)
+        self.ctx = Context(self.broker, self.symbol, self.timeframe, self.history, self.logs)
+        self.processed = 0
+        self._seen_trades = 0
+        self._started = _time.perf_counter()
+        self.strategy.on_start(self.ctx)
+        return self.ctx
+
+    def step(self) -> Bar:
+        """Play the next unprocessed bar through the six steps."""
+        index = self.processed
+        bar = self.bars[index]
+        ctx, broker = self.ctx, self.broker
+        warm = index >= max(0, self.config.warmup_bars)
+
+        ctx.now = bar.time
+        ctx.bar = bar
+        ctx.price = bar.open
+
+        # 1. Orders queued at the previous close fill here, at this open.
+        broker.fill_pending(bar.open, bar.time, bar)
+
+        if warm:
+            # 2 + 3. Decide on the open, then fill at that same open.
+            self.strategy.on_bar_open(ctx, BarOpen(time=bar.time, price=bar.open))
+            broker.fill_pending(bar.open, bar.time, bar)
+
+        # 4. Advance positions through the bar's range.
+        broker.process_bar(bar)
+
+        # The bar is now finished, so the close is the tradeable price.
+        ctx.price = bar.close
+        self.history._advance(index + 1)
+        self.processed = index + 1
+
+        self._flush_trades()
+
+        # 5. React to the closed bar; orders wait for the next open.
+        if warm:
+            self.strategy.on_bar(ctx, bar)
+            self._flush_trades()
+
+        # 6.
+        broker.record_equity(bar)
+        return bar
+
+    def finish(self) -> BacktestResult:
+        """Call `on_finish`, settle what is still open, and collect the result."""
+        ctx, broker = self.ctx, self.broker
+        last = self.bars[self.processed - 1]
         ctx.price = last.close
         self.strategy.on_finish(ctx)
         if self.config.close_at_end and broker.positions:
             broker.finalize(last)
-        self._flush_trades(ctx, broker, seen_trades)
+        self._flush_trades()
         broker.record_equity(last)
 
         return BacktestResult(
@@ -125,20 +145,20 @@ class Backtester:
             equity=broker.equity_curve,
             initial_balance=self.execution.initial_balance,
             final_balance=broker.balance,
-            bars_processed=index + 1,
-            start=bars[0].time,
+            bars_processed=self.processed,
+            start=self.bars[0].time,
             end=last.time,
             artifacts=self.strategy.artifacts(),
-            logs=logs
-            + [f"run took {_time.perf_counter() - started:.2f}s"]
+            logs=self.logs
+            + [f"run took {_time.perf_counter() - self._started:.2f}s"]
             + [f"rejected: {reason}" for _, reason in broker.rejected[:20]],
         )
 
-    def _flush_trades(self, ctx: Context, broker: SimulatedBroker, seen: int) -> int:
+    def _flush_trades(self) -> None:
         """Deliver on_trade for anything closed since the last check."""
-        for trade in broker.trades[seen:]:
-            self.strategy.on_trade(ctx, trade)
-        return len(broker.trades)
+        for trade in self.broker.trades[self._seen_trades:]:
+            self.strategy.on_trade(self.ctx, trade)
+        self._seen_trades = len(self.broker.trades)
 
 
 def run_backtest(

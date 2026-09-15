@@ -424,6 +424,7 @@ class MZ50Strategy(Strategy):
             ctx.order(
                 Side.BUY if child.direction > 0 else Side.SELL,
                 volume=self.p.volume,
+                sl=child.stop_for(child.e50),
                 tp=child.mz0,
                 limit=child.e50,
                 cancel_at=child.mz0,

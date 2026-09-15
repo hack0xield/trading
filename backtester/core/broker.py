@@ -192,6 +192,13 @@ class SimulatedBroker:
         self.pending = resting
         return opened
 
+    def modify(self, position: Position, sl: float | None = None, tp: float | None = None) -> None:
+        """Move a position's stop or target."""
+        if sl is not None:
+            position.sl = self.instrument.round_price(sl)
+        if tp is not None:
+            position.tp = self.instrument.round_price(tp)
+
     def cancel_pending(self) -> int:
         """Drop every queued order. Returns how many were dropped."""
         count = len(self.pending)

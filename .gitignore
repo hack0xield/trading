@@ -21,6 +21,7 @@ __pycache__/
 /data/
 /runs/
 /runs-adhoc/
+/runs-live/
 *.parquet
 *.db
 *.sqlite3
