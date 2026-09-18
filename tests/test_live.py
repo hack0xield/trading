@@ -81,7 +81,8 @@ class Recorder:
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, **params):
+def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, retry_seconds=15.0,
+         **params):
     mt5 = FakeMT5(gold, config)
     tape = Tape(mt5, bars, closed)
     notify = Notifier("mz50", "XAUUSD")
@@ -95,7 +96,8 @@ def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, **para
     runner = LiveRunner(
         mt5=mt5, feed=tape, strategy=MZ50Strategy(**{**desk, **params}), symbol="XAUUSD",
         timeframe="H4", start=START, magic=MAGIC, notify=notify, instrument=gold,
-        execution=config, poll_seconds=0, paper=paper, state=state_file, log=lambda _: None,
+        execution=config, poll_seconds=0, paper=paper, state=state_file,
+        retry_seconds=retry_seconds, clock=lambda: mt5.time, log=lambda _: None,
     )
     return runner, tape, mt5, recorder
 
@@ -921,3 +923,252 @@ def _alive(pid: int) -> bool:
             return fh.read().split(") ")[1][0] != "Z"
     except FileNotFoundError:
         return False
+
+
+class TestNotNow:
+    """Answers meaning "not now": the request is kept and sent again, spaced out."""
+
+    def open_closed(self, desk, gold, config, bars, wanted, seconds, **params):
+        """A runner at the open where `wanted` is first sent, the market closed for `seconds`."""
+        closed = closed_when_sent(desk, gold, config, bars, wanted, **params)
+        runner, tape, mt5, recorder = make(desk, gold, config, bars, **params)
+        runner.warm_up()
+        play(runner, tape, until=closed - 1)
+        tape.advance()
+        mt5.closed_until = mt5.time + seconds
+        runner.tick()
+        return runner, tape, mt5, recorder
+
+    @staticmethod
+    def poll_until(runner, mt5, done, step=15, limit=40):
+        for _ in range(limit):
+            if done():
+                return
+            mt5.elapse(step)
+            runner.tick()
+        raise AssertionError("never happened")
+
+    def test_a_limit_sent_at_the_rollover_rests_once_the_market_opens(self, desk, gold, config):
+        """2026-09-16: the chain's limit went out at the daily break and was lost."""
+        bars, params = scenario("chain_limit_fill", desk, gold, config)
+        _, result = backtest(desk, gold, config, bars, **params)
+        runner, tape, mt5, recorder = self.open_closed(desk, gold, config, bars, is_limit, 300,
+                                                       **params)
+        bar = tape.closed
+        assert mt5.orders == {}
+        (queued,) = runner.live.queued_rows()
+        assert queued["problem"] == "Market closed (retcode 10018)"
+
+        self.poll_until(runner, mt5, lambda: mt5.orders)
+        assert tape.closed == bar
+        chain = [e for e, _ in recorder.events if "chain" in str(e.data.get("tag"))]
+        assert [e.kind for e in chain].count(ORDER_INTENT) == 1
+        assert [e.kind for e in chain].count(ORDER_PLACED) == 1
+        assert not recorder.of(ORDER_REJECTED) and not recorder.of(ERROR)
+
+        play(runner, tape)
+        assert fingerprint(runner.live.trades) == fingerprint(result.trades)
+        assert entries(runner.live.trades + runner.live.positions) == entries(result.trades)
+
+    def test_a_market_order_fills_once_the_market_opens(self, desk, gold, config):
+        bars = bars_for(PARENT + [1499, 1499])
+        _, result = backtest(desk, gold, config, bars)
+        runner, tape, mt5, recorder = self.open_closed(desk, gold, config, bars, is_entry, 120)
+        assert not runner.live.positions
+
+        self.poll_until(runner, mt5, lambda: runner.live.positions)
+        assert recorder.kinds().count(ORDER_INTENT) == 1
+        play(runner, tape)
+        assert not recorder.of(ORDER_REJECTED) and not recorder.of(ERROR)
+        (live,), (expected,) = runner.live.trades, result.trades
+        assert (live.side, live.entry_price, live.sl, live.tp, live.exit_price, live.reason) == (
+            expected.side, expected.entry_price, expected.sl, expected.tp,
+            expected.exit_price, expected.reason)
+
+    def test_a_market_closed_all_bar_is_rejected_when_the_bar_ends(self, desk, gold, config):
+        bars = bars_for(PARENT + [1499, 1499])
+        runner, tape, mt5, recorder = self.open_closed(desk, gold, config, bars, is_entry,
+                                                       4 * 3600)
+        for _ in range(5):
+            mt5.elapse(15)
+            runner.tick()
+        assert not recorder.of(ORDER_REJECTED)
+        tape.advance()
+        runner.tick()
+
+        (rejected,) = recorder.of(ORDER_REJECTED)
+        assert rejected.data["reason"] == (
+            "not sent before its bar ended: Market closed (retcode 10018)")
+        assert not recorder.of(ERROR)
+        assert mt5.positions == {} and runner.live.positions == []
+
+    @pytest.mark.parametrize("carried_out, sends", [(True, 1), (False, 2)])
+    def test_a_timeout_is_looked_for_before_it_is_sent_again(
+        self, carried_out, sends, desk, gold, config
+    ):
+        bars = bars_for(PARENT + [1499, 1499])
+        _, result = backtest(desk, gold, config, bars)
+        runner, tape, mt5, recorder = make(desk, gold, config, bars)
+        runner.warm_up()
+        play(runner, tape, until=entry_index(desk, gold, config, bars) - 1)
+        mt5.answers = [(mt5.TRADE_RETCODE_TIMEOUT, carried_out)]
+        tape.advance()
+        runner.tick()
+        runner.tick()
+
+        assert len(entries_sent(mt5)) == sends
+        assert recorder.kinds().count(ORDER_FILLED) == 1
+        play(runner, tape)
+        assert not recorder.of(ORDER_REJECTED)
+        assert fingerprint(runner.live.trades) == fingerprint(result.trades)
+
+    def test_algo_trading_off_is_told_once_and_the_order_waits(self, desk, gold, config):
+        bars = bars_for(PARENT + [1499, 1499])
+        runner, tape, mt5, recorder = make(desk, gold, config, bars)
+        runner.notify.REPEAT_AFTER = 0           # only the broker keeps it to one
+        runner.warm_up()
+        play(runner, tape, until=entry_index(desk, gold, config, bars) - 1)
+        mt5.algo_trading = False
+        tape.advance()
+        runner.tick()
+        for _ in range(4):
+            mt5.elapse(15)
+            runner.tick()
+
+        (error,) = recorder.of(ERROR)
+        assert error.data["retrying"] is True and error.data["retcode"] == "CLIENT_DISABLES_AT"
+        assert error.data["error"].startswith("Algo Trading is off in the terminal")
+        assert len(entries_sent(mt5)) == 5 and not runner.live.positions
+
+        mt5.algo_trading = True
+        mt5.elapse(15)
+        runner.tick()
+        assert runner.live.positions
+        assert len(recorder.of(ERROR)) == 1 and not recorder.of(ORDER_REJECTED)
+
+    def test_a_close_refused_as_market_closed_is_retried_until_it_closes(
+        self, desk, gold, config
+    ):
+        bars = bars_for(PARENT + [1800, 1800, 1800])
+        _, result = backtest(desk, gold, config, bars)
+        runner, tape, mt5, recorder = self.open_closed(desk, gold, config, bars, is_close, 60)
+        assert runner.live.positions
+
+        self.poll_until(runner, mt5, lambda: not runner.live.positions, step=5)
+        assert len([r for r in mt5.requests if is_close(r)]) == 5    # at 0, 15, 30, 45, 60 s
+        assert recorder.kinds().count(EXIT_INTENT) == 1
+        assert not recorder.of(ORDER_REJECTED) and not recorder.of(ERROR)
+        (live,), (expected,) = runner.live.trades, result.trades
+        assert (live.reason, live.exit_price) == (expected.reason, expected.exit_price)
+
+    @pytest.mark.parametrize("interval", [15.0, 30.0])
+    def test_retries_are_spaced_by_the_configured_interval(self, interval, desk, gold, config):
+        bars = bars_for(PARENT + [1499, 1499])
+        runner, tape, mt5, _ = make(desk, gold, config, bars, retry_seconds=interval)
+        runner.warm_up()
+        play(runner, tape, until=entry_index(desk, gold, config, bars) - 1)
+        tape.advance()
+        mt5.closed_until = mt5.time + 3600
+        runner.tick()
+        assert len(entries_sent(mt5)) == 1
+
+        mt5.elapse(interval - 1)
+        runner.tick()
+        runner.tick()
+        assert len(entries_sent(mt5)) == 1
+        mt5.elapse(1)
+        runner.tick()
+        assert len(entries_sent(mt5)) == 2
+
+    def test_a_limit_the_market_reached_while_closed_fills_at_market(self, desk, gold, config):
+        bars = bars_for(PARENT + [1400, 1400])
+        runner, _, mt5, recorder = self.open_closed(desk, gold, config, bars, is_limit, 60,
+                                                    trend_follow=True)
+        (queued,) = runner.live.queued_rows()
+        mt5.bid = mt5.ask = queued["limit"] + 5.0          # the retest came while closed
+        self.poll_until(runner, mt5, lambda: runner.live.positions)
+
+        assert is_entry(mt5.requests[-1])                     # a market order, not the limit
+        assert "chain" in runner.live.positions[0].tag
+        chain = [e for e, _ in recorder.events if "chain" in str(e.data.get("tag"))]
+        assert [e.kind for e in chain].count(ORDER_INTENT) == 1
+        assert not recorder.of(ORDER_REJECTED)
+
+    def test_a_limit_whose_void_level_passed_while_closed_is_cancelled(
+        self, desk, gold, config
+    ):
+        bars = bars_for(PARENT + [1400, 1400])
+        runner, _, mt5, recorder = self.open_closed(desk, gold, config, bars, is_limit, 60,
+                                                    trend_follow=True)
+        (queued,) = runner.live.queued_rows()
+        mt5.bid = mt5.ask = queued["void"] - 5.0            # the child's target, reached first
+        sent = len([r for r in mt5.requests if is_limit(r)])
+        self.poll_until(runner, mt5, lambda: recorder.of(ORDER_CANCELLED))
+
+        assert recorder.of(ORDER_CANCELLED)[0].data["reason"] == "void level reached"
+        assert len([r for r in mt5.requests if is_limit(r)]) == sent
+        assert runner.live.queued_rows() == [] and mt5.orders == {}
+
+    def test_a_restart_places_the_replays_resting_limit_at_the_next_open(
+        self, desk, gold, config
+    ):
+        """How the live account gets back in step after a lost limit order."""
+        bars = bars_for(PARENT + [1400, 1400])
+        placed = closed_when_sent(desk, gold, config, bars, is_limit, trend_follow=True)
+        runner, tape, mt5, recorder = make(desk, gold, config, bars, closed=placed + 1,
+                                           trend_follow=True)
+        runner.warm_up()
+        assert runner.live is None and mt5.orders == {}
+        assert [o.limit_price for o in runner.backtest.broker.pending]
+
+        tape.advance()
+        runner.tick()
+        assert runner.live is not None
+        (order,) = mt5.orders.values()
+        assert "chain" in order.comment
+        assert recorder.of(ORDER_PLACED)[0].mode == "live"
+
+    def test_moves_and_removals_wait_out_a_closed_market(self, desk, gold, config):
+        bars = bars_for(PARENT + [1400, 1400])
+        runner, tape, mt5, recorder = make(desk, gold, config, bars, trend_follow=True)
+        runner.warm_up()
+        while not mt5.orders:
+            tape.advance()
+            runner.tick()
+        live = runner.live
+        live.submit(OrderRequest(side=Side.SELL, volume=0.1, sl_price=1500.0, tp_price=1300.0,
+                                 tag="move"))
+        live.execute_pending()
+        position = next(p for p in live.positions if p.tag == "move")
+
+        mt5.closed_until = mt5.time + 30
+        live.modify(position, sl=1450.0)
+        live.cancel_pending()
+        assert position.sl == 1500.0 and mt5.orders and live.pending == []
+        mt5.elapse(10)
+        live.retry()
+        assert len([r for r in mt5.requests if r["action"] == mt5.TRADE_ACTION_REMOVE]) == 1
+        mt5.elapse(20)
+        live.retry()
+        live.retry()
+
+        assert position.sl == 1450.0 and mt5.positions[position.id].sl == 1450.0
+        assert mt5.orders == {}
+        assert recorder.of(ORDER_CANCELLED)[-1].data["reason"] == "cancelled by strategy"
+        assert not recorder.of(ORDER_REJECTED) and not recorder.of(ERROR)
+
+    def test_a_leftover_close_waits_out_a_closed_market(self, desk, gold, config):
+        runner, tape, mt5, recorder = make(desk, gold, config, bars_for(PARENT))
+        ours = mt5.hold(Side.BUY, 1900.0, 1000.0, 2500.0, MAGIC, "mz50 z99 old")
+        mt5.closed_until = mt5.time + 30
+        runner.warm_up()
+        assert ours.ticket in mt5.positions
+
+        tape.advance()
+        runner.tick()
+        mt5.elapse(30)
+        runner.tick()
+        assert ours.ticket not in mt5.positions
+        (closed,) = recorder.of(POSITION_CLOSED)
+        assert closed.data["leftover"] is True
+        assert not recorder.of(ERROR) and not recorder.of(ORDER_REJECTED)

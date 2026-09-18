@@ -6,16 +6,19 @@ account's server holds stops and targets; `sync` reads back what it did.
 
 Only positions and orders on `symbol` carrying `magic` belong to this broker,
 and nothing is sent while the terminal is logged in to any account but
-`login`. A send the terminal gives no answer for may still have reached the
-broker, so it is looked for there before it is counted or sent again.
+`login`. The broker's answer to a send is one of four: done; refused; not now,
+kept and sent again after `retry_seconds`; or possibly done, looked for at the
+broker before it is counted or sent again.
 
 `mt5` is the `MetaTrader5` module, or anything with the same calls.
 """
 
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 from ..core.instrument import Instrument
 from ..core.types import Bar, EquityPoint, ExitReason, OrderRequest, Position, Side, Trade
@@ -43,7 +46,24 @@ DEAL_WINDOW = timedelta(days=2)
 #: What became of a request.
 DONE = "done"
 REFUSED = "refused"
-UNANSWERED = "unanswered"
+UNANSWERED = "unanswered"        # it may have been carried out
+LATER = "later"                  # it was not carried out, and may be shortly
+
+#: Answers, by their `TRADE_RETCODE_` name, for a request certainly not carried
+#: out that the same request may get past shortly.
+NOT_NOW = (
+    "MARKET_CLOSED", "PRICE_OFF", "REQUOTE", "PRICE_CHANGED", "TOO_MANY_REQUESTS",
+    "TRADE_DISABLED", "SERVER_DISABLES_AT", "CLIENT_DISABLES_AT", "FROZEN",
+)
+#: Answers after which the request may have been carried out, wholly or in part.
+MAYBE_DONE = ("TIMEOUT", "CONNECTION", "LOCKED", "DONE_PARTIAL")
+#: Not-now answers someone has to act on, and what to tell them.
+NEEDS_ACTION = {
+    "CLIENT_DISABLES_AT": "Algo Trading is off in the terminal",
+    "SERVER_DISABLES_AT": "the broker has disabled automated trading",
+    "TRADE_DISABLED": "trading is disabled for the symbol or the account",
+}
+DEFAULT_RETRY_SECONDS = 15.0
 
 
 class BrokerUnavailable(RuntimeError):
@@ -66,8 +86,9 @@ class Queued:
 
     order: OrderRequest
     announced: bool = False      # its order_intent has gone out
-    unanswered: bool = False     # a send got no answer, so it may be at the broker
+    unanswered: bool = False     # a send may have been carried out, so look before resending
     problem: str = ""            # why it is still waiting
+    not_before: float = 0.0      # clock time before which it is not sent again
 
 
 @dataclass(slots=True)
@@ -109,6 +130,8 @@ class LiveBroker:
         login: int,
         notify: Notifier,
         deviation: int = 20,
+        retry_seconds: float = DEFAULT_RETRY_SECONDS,
+        clock: Callable[[], float] = _time.monotonic,
     ):
         self.mt5 = mt5
         self.symbol = symbol
@@ -117,6 +140,8 @@ class LiveBroker:
         self.login = int(login)
         self.notify = notify
         self.deviation = int(deviation)
+        self.retry_seconds = float(retry_seconds)
+        self.clock = clock
         self.positions: list[Position] = []
         self.trades: list[Trade] = []
         self.cancelled: list[OrderRequest] = []
@@ -127,9 +152,14 @@ class LiveBroker:
         self._closing: dict[int, ExitReason] = {}   # closes still to get through
         self._exit_announced: set[int] = set()      # closes whose exit_intent has gone out
         self._modifying: dict[int, tuple[float | None, float | None]] = {}
+        self._due: dict[tuple[str, int], float] = {}  # (action, ticket) -> clock time of next try
+        self._leftovers: dict[int, Position] = {}   # positions not the strategy's, still to close
         self._known: set[int] = set()               # every ticket this broker has taken on
         self._reported: set[int] = set()            # untracked tickets already reported
         self._filling: int | None = None
+        self._retcodes = {getattr(mt5, f"TRADE_RETCODE_{name}"): name
+                          for name in NOT_NOW + MAYBE_DONE}
+        self._blocked = ""                          # the need-action answer last reported
         self.balance = 0.0
         self.equity = 0.0
         self.refresh_account()
@@ -200,9 +230,10 @@ class LiveBroker:
     def execute_pending(self, resend: bool = True) -> None:
         """Send every queued order: market orders fill now, limit orders go to rest.
 
-        What cannot be sent now, or got no answer and is not at the broker,
-        stays queued. An order that got no answer is sent again only when
-        `resend`, so the broker has had a poll's time to show it first.
+        What cannot be sent now stays queued: an order the broker answered "not
+        now" until `retry_seconds` have passed, and one that may have reached it
+        until a later call with `resend`, so the broker has had a poll's time to
+        show it first.
         """
         if not self._queued:
             return
@@ -211,8 +242,10 @@ class LiveBroker:
         index = 0
         try:
             tick = self.tick()
+            now = self.clock()
             for index, entry in enumerate(waiting):
-                if (entry.unanswered and not resend) or not self._execute(entry, tick):
+                held = (entry.unanswered and not resend) or entry.not_before > now
+                if held or not self._execute(entry, tick):
                     keep.append(entry)
         except BrokerUnavailable as exc:
             for entry in waiting[index:]:
@@ -266,21 +299,30 @@ class LiveBroker:
                 self._remove(resting, "void level reached")
 
     def retry(self) -> None:
-        """Try again the closes, stop and target moves and removals still owed."""
+        """Try again the closes, stop and target moves and removals still owed,
+        each once its wait after a not-now answer is over."""
+        now = self.clock()
         for ticket, reason in list(self._closing.items()):
             position = self._position(ticket)
             if position is None:
                 self._closing.pop(ticket)
-            else:
+            elif self._due.get(("close", ticket), 0.0) <= now:
                 self.close_position(position, reason=reason)
         for ticket, (sl, tp) in list(self._modifying.items()):
             position = self._position(ticket)
             if position is None:
                 self._modifying.pop(ticket)
-            else:
+            elif self._due.get(("modify", ticket), 0.0) <= now:
                 self.modify(position, sl, tp)
         for resting in [r for r in self._resting if r.withdraw]:
-            self._remove(resting, resting.withdraw)
+            if self._due.get(("remove", resting.ticket), 0.0) <= now:
+                self._remove(resting, resting.withdraw)
+        for position in list(self._leftovers.values()):
+            if self._due.get(("close", position.id), 0.0) <= now:
+                try:
+                    self._close_leftover(position)
+                except BrokerUnavailable as exc:
+                    self._trouble(exc)
 
     def _execute(self, entry: Queued, tick) -> bool:
         """Send one queued order; False keeps it queued."""
@@ -325,6 +367,8 @@ class LiveBroker:
         if answer.status == REFUSED:
             self._reject(order, answer.reason, price=price, sl=sl, tp=tp)
             return True
+        if answer.status == LATER:
+            return self._later(entry, answer)
         if answer.status == UNANSWERED:
             entry.unanswered, entry.problem = True, answer.reason
             return self._adopt_sent(entry)
@@ -362,6 +406,8 @@ class LiveBroker:
         if answer.status == REFUSED:
             self._reject(order, answer.reason, limit=limit, sl=sl, tp=tp)
             return True
+        if answer.status == LATER:
+            return self._later(entry, answer)
         if answer.status == UNANSWERED:
             entry.unanswered, entry.problem = True, answer.reason
             return self._adopt_sent(entry)
@@ -381,6 +427,9 @@ class LiveBroker:
         except BrokerUnavailable as exc:
             self._trouble(exc)
             return
+        if answer.status == LATER:
+            self._wait("remove", resting.ticket)
+            return
         if answer.status == REFUSED:
             # Most often it has just filled, which the next sync reads back.
             if not resting.refused:
@@ -391,9 +440,19 @@ class LiveBroker:
         if answer.status == UNANSWERED:
             return                               # gone: the next sync reads whether it filled
         self._resting.remove(resting)
+        self._due.pop(("remove", resting.ticket), None)
         self.cancelled.append(resting.order)
         self.notify.emit(ORDER_CANCELLED, **_describe(resting.order), ticket=resting.ticket,
                          reason=reason)
+
+    def _later(self, entry: Queued, answer: Answer) -> bool:
+        """Keep an order the broker answered "not now", to be sent again after the wait."""
+        entry.problem = answer.reason
+        entry.not_before = self.clock() + self.retry_seconds
+        return False
+
+    def _wait(self, action: str, ticket: int) -> None:
+        self._due[(action, ticket)] = self.clock() + self.retry_seconds
 
     def _reject(self, order: OrderRequest, reason: str, **detail) -> None:
         self.rejected.append((order, reason))
@@ -405,7 +464,7 @@ class LiveBroker:
         """Move a stop or target at the broker.
 
         A stop the market has already passed closes the position instead, as the
-        backtest's next bar would. A move that cannot get through is retried.
+        backtest's next bar would. A move the broker cannot take now is retried.
         """
         new_sl = self.instrument.round_price(sl) if sl is not None else position.sl
         new_tp = self.instrument.round_price(tp) if tp is not None else position.tp
@@ -426,6 +485,10 @@ class LiveBroker:
                 "tp": float(new_tp or 0.0),
                 "magic": self.magic,
             })
+            if answer.status == LATER:
+                self._modifying[position.id] = (new_sl, new_tp)
+                self._wait("modify", position.id)
+                return
             if answer.status == UNANSWERED:
                 found = self._query(self.mt5.positions_get, ticket=position.id)
                 if not found:
@@ -468,10 +531,13 @@ class LiveBroker:
             self._closing[position.id] = reason
             self._trouble(exc)
             return None
-        if outcome == UNANSWERED:
+        if outcome in (UNANSWERED, LATER):
             self._closing[position.id] = reason
+            if outcome == LATER:
+                self._wait("close", position.id)
             return None
         self._closing.pop(position.id, None)
+        self._due.pop(("close", position.id), None)
         if outcome == REFUSED:
             self._exit_announced.discard(position.id)
             return None
@@ -482,7 +548,7 @@ class LiveBroker:
         return [t for t in closed if t is not None]
 
     def _close_at_market(self, position: Position, why: str, announce: bool = True) -> str:
-        """DONE once the broker no longer holds the position, REFUSED, or UNANSWERED."""
+        """DONE once the broker no longer holds the position, else REFUSED, LATER or UNANSWERED."""
         tick = self.tick()
         price = tick.bid if position.side is Side.BUY else tick.ask
         self._account()
@@ -553,6 +619,9 @@ class LiveBroker:
             else:
                 position.sl, position.tp = row.sl or None, row.tp or None
                 position.swap = float(row.swap)
+
+        for ticket in [t for t in self._leftovers if t not in rows]:
+            self._leftover_closed(self._leftovers.pop(ticket))
 
         self._report_untracked(rows, orders)
 
@@ -640,6 +709,8 @@ class LiveBroker:
         self.positions.remove(position)
         self._closing.pop(position.id, None)
         self._modifying.pop(position.id, None)
+        self._due.pop(("close", position.id), None)
+        self._due.pop(("modify", position.id), None)
         self._exit_announced.discard(position.id)
         self.trades.append(trade)
         self.notify.emit(POSITION_CLOSED, **trade.as_row(), ticket=position.id)
@@ -700,7 +771,7 @@ class LiveBroker:
         )
 
     def _report_untracked(self, rows: dict, orders: dict) -> None:
-        tracked = {p.id for p in self.positions}
+        tracked = {p.id for p in self.positions} | set(self._leftovers)
         for ticket, row in rows.items():
             if ticket not in tracked and ticket not in self._reported:
                 self._reported.add(ticket)
@@ -786,12 +857,31 @@ class LiveBroker:
         self._known.add(int(row.ticket))
 
     def close_leftover(self, row) -> None:
-        """Close a position of ours the strategy does not hold, outside its trade record."""
+        """Close a position of ours the strategy does not hold, outside its trade record.
+
+        A close the broker cannot take now is retried like the strategy's own.
+        """
         position = self._position_from(row)
         self._known.add(position.id)
-        if self._close_at_market(position, "not held by the strategy") == DONE:
-            self.notify.emit(POSITION_CLOSED, ticket=position.id, side=position.side,
-                             volume=position.volume, tag=position.tag, leftover=True)
+        self._leftovers[position.id] = position
+        self._close_leftover(position)
+
+    def _close_leftover(self, position: Position) -> None:
+        outcome = self._close_at_market(position, "not held by the strategy",
+                                        announce=position.id not in self._exit_announced)
+        if outcome == LATER:
+            self._wait("close", position.id)
+        if outcome in (LATER, UNANSWERED):
+            return
+        del self._leftovers[position.id]
+        self._due.pop(("close", position.id), None)
+        if outcome == DONE:
+            self._leftover_closed(position)
+
+    def _leftover_closed(self, position: Position) -> None:
+        self._exit_announced.discard(position.id)
+        self.notify.emit(POSITION_CLOSED, ticket=position.id, side=position.side,
+                         volume=position.volume, tag=position.tag, leftover=True)
 
     def remove_leftover(self, row) -> None:
         """Remove an order of ours the strategy does not hold."""
@@ -815,14 +905,31 @@ class LiveBroker:
         return info
 
     def _send(self, request: dict) -> Answer:
-        """Send one request, once the terminal is confirmed on the traded account."""
+        """Send one request, once the terminal is confirmed on the traded account,
+        and say what became of it."""
         self._account()
         result = self.mt5.order_send(request)
         if result is None:
             return Answer(UNANSWERED, reason=f"no answer from order_send: {self.mt5.last_error()}")
-        if int(result.retcode) not in (self.mt5.TRADE_RETCODE_DONE, self.mt5.TRADE_RETCODE_PLACED):
-            return Answer(REFUSED, reason=f"{result.comment} (retcode {result.retcode})")
-        return Answer(DONE, result)
+        retcode = int(result.retcode)
+        if retcode in (self.mt5.TRADE_RETCODE_DONE, self.mt5.TRADE_RETCODE_PLACED):
+            self._blocked = ""
+            return Answer(DONE, result)
+        reason = f"{result.comment} (retcode {retcode})"
+        name = self._retcodes.get(retcode, "")
+        if name in NOT_NOW:
+            self._report_blocked(name, reason)
+            return Answer(LATER, reason=reason)
+        if name in MAYBE_DONE:
+            return Answer(UNANSWERED, reason=reason)
+        return Answer(REFUSED, reason=reason)
+
+    def _report_blocked(self, name: str, reason: str) -> None:
+        """One retrying error for a not-now answer someone has to act on."""
+        if name in NEEDS_ACTION and self._blocked != name:
+            self._blocked = name
+            self.notify.emit(ERROR, retrying=True, retcode=name,
+                             error=f"{NEEDS_ACTION[name]}: {reason}; orders wait until it clears")
 
     def _trouble(self, exc: BrokerUnavailable) -> None:
         self.notify.emit(ERROR, error=str(exc), retrying=True, **exc.detail)

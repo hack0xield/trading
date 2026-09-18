@@ -7,7 +7,10 @@ live run against it can be compared with the backtest trade for trade.
 `login` is the account the terminal is on, and `silence` queues what the next
 sends do instead of answering: "lost" carries a send out and returns None,
 "late" does the same but only once `catch_up` is called, and "unsent" returns
-None without it.
+None without it. `answers` queues `(retcode, carried_out)` for the next sends.
+Until the quote time reaches `closed_until` every send is answered "market
+closed", and with `algo_trading` off "AutoTrading disabled by client"; `elapse`
+moves the quote time on within a bar.
 """
 
 from __future__ import annotations
@@ -46,9 +49,23 @@ class FakeMT5:
     DEAL_REASON_SL = 4
     DEAL_REASON_TP = 5
     DEAL_REASON_SO = 6
+    TRADE_RETCODE_REQUOTE = 10004
+    TRADE_RETCODE_REJECT = 10006
     TRADE_RETCODE_PLACED = 10008
     TRADE_RETCODE_DONE = 10009
-    TRADE_RETCODE_REJECT = 10006
+    TRADE_RETCODE_DONE_PARTIAL = 10010
+    TRADE_RETCODE_TIMEOUT = 10012
+    TRADE_RETCODE_INVALID_STOPS = 10016
+    TRADE_RETCODE_TRADE_DISABLED = 10017
+    TRADE_RETCODE_MARKET_CLOSED = 10018
+    TRADE_RETCODE_PRICE_CHANGED = 10020
+    TRADE_RETCODE_PRICE_OFF = 10021
+    TRADE_RETCODE_TOO_MANY_REQUESTS = 10024
+    TRADE_RETCODE_SERVER_DISABLES_AT = 10026
+    TRADE_RETCODE_CLIENT_DISABLES_AT = 10027
+    TRADE_RETCODE_LOCKED = 10028
+    TRADE_RETCODE_FROZEN = 10029
+    TRADE_RETCODE_CONNECTION = 10031
     ACCOUNT_TRADE_MODE_DEMO = 0
     ACCOUNT_TRADE_MODE_CONTEST = 1
     ACCOUNT_TRADE_MODE_REAL = 2
@@ -69,6 +86,8 @@ class FakeMT5:
         self.requests: list[dict] = []
         self.reject_next = False
         self.silence: list[str] = []
+        self.answers: list[tuple[int, bool]] = []
+        self.closed_until = 0
         self._late: list[dict] = []
         self.online = True
         self.login = 1
@@ -174,7 +193,24 @@ class FakeMT5:
             elif mode == "late":
                 self._late.append(request)
             return None
+        if self.answers:
+            retcode, carried_out = self.answers.pop(0)
+            if carried_out:
+                self._carry_out(request)
+            return self._answer(retcode, "answered")
+        if not self.algo_trading:
+            return self._answer(self.TRADE_RETCODE_CLIENT_DISABLES_AT,
+                                "AutoTrading disabled by client")
+        if self.time < self.closed_until:
+            return self._answer(self.TRADE_RETCODE_MARKET_CLOSED, "Market closed")
         return self._carry_out(request)
+
+    def elapse(self, seconds: int) -> None:
+        """Move the quote time on, inside the bar in progress."""
+        self.time += int(seconds)
+
+    def _answer(self, retcode: int, comment: str):
+        return Row(retcode=retcode, comment=comment, order=0, deal=0, price=0.0, volume=0.0)
 
     def catch_up(self) -> None:
         """Carry out the sends held back as "late"."""

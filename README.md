@@ -28,7 +28,7 @@ backtester/
   cli.py        argument plumbing shared by the scripts
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          408 tests, ~5s
+tests/          422 tests, ~7s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -280,16 +280,31 @@ sent, an `error` carries `expected_login` and `actual_login`, and the runner
 treats the terminal as unavailable: queued orders stay queued and the run loop
 logs back in.
 
-**When the terminal gives no answer.** An `order_send` that returns nothing
-may still have reached the broker, so it is never counted as rejected. The
-runner looks for it at the broker, by magic number and tag, among positions,
-resting orders and the recent deals, and adopts it if it is there. If not, the
-order stays queued and is sent again on the next poll; one still unsent when
-its bar ends is rejected with a reason that says so. Closes, stop moves and
-removals that get no answer are retried the same way until the broker shows
-them done. Only a definite refusal is an immediate `order_rejected`. A position
-or order under the magic number that the runner does not track is reported as
-an `error`, once, and left alone.
+**What the broker answers.** Every request comes back one of four ways,
+read from its `TRADE_RETCODE_*`:
+
+| answer | retcodes | what happens |
+|---|---|---|
+| done | `DONE`, `PLACED` | the order is tracked |
+| not now: certainly not carried out, may succeed shortly | `MARKET_CLOSED`, `PRICE_OFF`, `REQUOTE`, `PRICE_CHANGED`, `TOO_MANY_REQUESTS`, `TRADE_DISABLED`, `SERVER_DISABLES_AT`, `CLIENT_DISABLES_AT`, `FROZEN` | kept and sent again, no sooner than `--retry-seconds` (default 15) |
+| possibly carried out | `TIMEOUT`, `CONNECTION`, `LOCKED`, `DONE_PARTIAL`, and no answer at all | looked for at the broker, by magic number and tag, among positions, resting orders and recent deals, and adopted if there; otherwise sent again on the next poll |
+| refused | everything else: invalid stops, no money, invalid volume, … | an immediate `order_rejected` |
+
+mz50 decides at the daily rollover, so its orders go out at 00:00 on the
+broker's clock, often before the trade session has opened; "market closed"
+then is routine. A kept entry carries the broker's answer as its `problem`
+and is sent again within its bar, with the usual checks each time: a limit
+whose void level was reached is cancelled, a limit the market already reached
+fills at market, and a stop or target already passed is refused. Its
+`order_intent` goes out once. One still unsent when its bar ends is rejected,
+the reason naming the last answer. Closes, stop moves and removals are kept
+the same way until they go through. Answers that need someone to act (Algo
+Trading off, automated trading disabled by the broker, trading disabled for
+the symbol) raise one retrying `error` naming the cause; any other "not now"
+raises nothing.
+
+A position or order under the magic number that the runner does not track is
+reported as an `error`, once, and left alone.
 
 The login is tried first from a separate process, `--connect-timeout` seconds
 at most (default 120): a terminal that hangs holds the Python interpreter lock
@@ -357,7 +372,7 @@ once more on exit:
 | `source` | `account`, or `replay` while in shadow: then the positions and orders below are the backtest's and none is on the account |
 | `positions` | `ticket`, `side`, `volume`, `price` (entry), `sl`, `tp`, `tag`, `entry_time`, `profit` (floating, null until read) |
 | `resting_orders` | `ticket`, `side`, `volume`, `limit`, `sl`, `tp`, `tag`, `void`, `withdrawing` |
-| `queued_orders` | `side`, `volume`, `order` (`market`/`limit`), `limit`, `sl`, `tp`, `void`, `tag`, `signal_time`, and live `unanswered`, `problem` |
+| `queued_orders` | `side`, `volume`, `order` (`market`/`limit`), `limit`, `sl`, `tp`, `void`, `tag`, `signal_time`, and live `unanswered` (it may be at the broker already) and `problem`: why it is still waiting, such as the broker's answer `Market closed (retcode 10018)`; routine at the daily break |
 | `margin` | `contract`, `as_of`, `maintenance`, `age_days`, `stale`, `stale_after_days`; null for a strategy without a margin log |
 | `last_error` | `time` and `error` of the latest `error` event, or null |
 | `failure` | why the runner stopped on its own, or null |
@@ -373,12 +388,12 @@ emitted), `kind`, `mode` (`shadow` or `live`), `strategy` and `symbol`:
 | `order_intent` | about to be sent: `side`, `volume`, `order`, `tag`, `signal_time`, `sl`, `tp`, and `limit` for a limit order or, live, `price` for a market one |
 | `order_placed` | a limit resting at the broker: the intent's fields and `ticket` |
 | `order_filled` | a position opened: `ticket`, `side`, `volume`, `price`, `sl`, `tp`, `tag`, `entry_time` |
-| `order_rejected` | an entry's fields and `reason`; or, for an open position's request, `ticket`, `action` (`close`, `modify`, `remove`) and `reason` |
+| `order_rejected` | a refusal, or an entry still unsent when its bar ended (`reason` starts `not sent before its bar ended:` and names the last answer); an entry's fields and `reason`, or for an open position's request `ticket`, `action` (`close`, `modify`, `remove`) and `reason`. Never for a "not now" answer while it can still be retried |
 | `order_cancelled` | the order's fields, `ticket` if it rested, and `reason` |
 | `position_modified` | `ticket`, `sl_from`, `sl`, `tp_from`, `tp` |
 | `exit_intent` | a close about to be sent: `ticket`, `side`, `volume`, `price`, `reason`, `tag` |
 | `position_closed` | the trade: `ticket`, `side`, `volume`, `entry_time`, `entry_price`, `exit_time`, `exit_price`, `reason` (`STOP_LOSS`, `TAKE_PROFIT`, `STRATEGY`, `MARGIN_CALL`), `gross_pnl`, `commission`, `swap`, `net_pnl`, `sl`, `tp`, `tag`, and more; a position closed for not being the strategy's carries only `ticket`, `side`, `volume`, `tag` and `leftover: true` |
-| `error` | `error`, `retrying` (true while the runner carries on); `expected_login`, `actual_login` for another account; `ticket` and the row's details for an untracked position or order |
+| `error` | `error`, `retrying` (true while the runner carries on); `expected_login`, `actual_login` for another account; `retcode` (`CLIENT_DISABLES_AT`, `SERVER_DISABLES_AT`, `TRADE_DISABLED`) once when trading is blocked until someone acts; `ticket` and the row's details for an untracked position or order. A closed market raises none |
 | `stopped` | `failure`, null after a requested stop |
 
 `tests/test_live.py` holds the runner to the backtest. Against a fake terminal
