@@ -44,7 +44,11 @@ from backtester.live import (  # noqa: E402
     Notifier,
     StateFile,
 )
-from backtester.live.broker import DEFAULT_RETRY_SECONDS, trade_mode_name  # noqa: E402
+from backtester.live.broker import (  # noqa: E402
+    DEFAULT_RETRY_MAX_SECONDS,
+    DEFAULT_RETRY_SECONDS,
+    trade_mode_name,
+)
 from backtester.live.events import ERROR  # noqa: E402
 from backtester.live.state import DEFAULT_STALE_AFTER_DAYS  # noqa: E402
 from backtester.strategies import get_strategy  # noqa: E402
@@ -124,8 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     trading.add_argument("--poll", type=float, default=2.0,
                          help="seconds between polls of the terminal (default 2)")
     trading.add_argument("--retry-seconds", type=float, default=DEFAULT_RETRY_SECONDS,
-                         help="wait before resending what the broker answered 'not now', "
+                         help="first wait before resending what the broker answered 'not now', "
                               f"such as market closed (default {DEFAULT_RETRY_SECONDS:g})")
+    trading.add_argument("--retry-max-seconds", type=float, default=DEFAULT_RETRY_MAX_SECONDS,
+                         help="longest wait, which it doubles up to "
+                              f"(default {DEFAULT_RETRY_MAX_SECONDS:g})")
     trading.add_argument("--allow-real", action="store_true",
                          help="permit a real-money account; refused otherwise")
 
@@ -237,6 +244,7 @@ def prepare(mt5, args, config, strategy_class, symbol, timeframe, magic, notify,
         state=state,
         margin_stale_days=args.margin_stale_days,
         retry_seconds=args.retry_seconds,
+        retry_max_seconds=args.retry_max_seconds,
         reconnect=lambda: (probe_terminal(args.connect_timeout), connect(mt5)),
     )
 

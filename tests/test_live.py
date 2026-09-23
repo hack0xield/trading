@@ -82,6 +82,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, retry_seconds=15.0,
+         retry_max_seconds=300.0,
          **params):
     mt5 = FakeMT5(gold, config)
     tape = Tape(mt5, bars, closed)
@@ -97,7 +98,8 @@ def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, retry_
         mt5=mt5, feed=tape, strategy=MZ50Strategy(**{**desk, **params}), symbol="XAUUSD",
         timeframe="H4", start=START, magic=MAGIC, notify=notify, instrument=gold,
         execution=config, poll_seconds=0, paper=paper, state=state_file,
-        retry_seconds=retry_seconds, clock=lambda: mt5.time, log=lambda _: None,
+        retry_seconds=retry_seconds, retry_max_seconds=retry_max_seconds,
+        clock=lambda: mt5.time, log=lambda _: None,
     )
     return runner, tape, mt5, recorder
 
@@ -1038,10 +1040,11 @@ class TestNotNow:
         (error,) = recorder.of(ERROR)
         assert error.data["retrying"] is True and error.data["retcode"] == "CLIENT_DISABLES_AT"
         assert error.data["error"].startswith("Algo Trading is off in the terminal")
-        assert len(entries_sent(mt5)) == 5 and not runner.live.positions
+        # At 0, 15 and 45 s: each answer doubles the wait.
+        assert len(entries_sent(mt5)) == 3 and not runner.live.positions
 
         mt5.algo_trading = True
-        mt5.elapse(15)
+        mt5.elapse(60)
         runner.tick()
         assert runner.live.positions
         assert len(recorder.of(ERROR)) == 1 and not recorder.of(ORDER_REJECTED)
@@ -1055,11 +1058,34 @@ class TestNotNow:
         assert runner.live.positions
 
         self.poll_until(runner, mt5, lambda: not runner.live.positions, step=5)
-        assert len([r for r in mt5.requests if is_close(r)]) == 5    # at 0, 15, 30, 45, 60 s
+        # At 0, 15 and 45 s while it is closed, then at 105 s, the first try
+        # after the market opened at 60 s.
+        assert len([r for r in mt5.requests if is_close(r)]) == 4
         assert recorder.kinds().count(EXIT_INTENT) == 1
         assert not recorder.of(ORDER_REJECTED) and not recorder.of(ERROR)
         (live,), (expected,) = runner.live.trades, result.trades
         assert (live.reason, live.exit_price) == (expected.reason, expected.exit_price)
+
+    def test_the_wait_doubles_up_to_the_maximum(self, desk, gold, config):
+        """A market closed for hours is asked every few minutes, not every few seconds."""
+        bars = bars_for(PARENT + [1499, 1499])
+        runner, tape, mt5, _ = make(desk, gold, config, bars, retry_seconds=10.0,
+                                    retry_max_seconds=25.0)
+        runner.warm_up()
+        play(runner, tape, until=entry_index(desk, gold, config, bars) - 1)
+        tape.advance()
+        mt5.closed_until = mt5.time + 3600
+        runner.tick()
+
+        sent_at = [mt5.time]
+        for _ in range(200):                      # 200 s, one poll a second
+            mt5.elapse(1)
+            before = len(entries_sent(mt5))
+            runner.tick()
+            if len(entries_sent(mt5)) > before:
+                sent_at.append(mt5.time)
+        gaps = [b - a for a, b in zip(sent_at, sent_at[1:])]
+        assert gaps == [10, 20] + [25] * 6, gaps      # 10 s, then double, then the cap
 
     @pytest.mark.parametrize("interval", [15.0, 30.0])
     def test_retries_are_spaced_by_the_configured_interval(self, interval, desk, gold, config):

@@ -7,7 +7,8 @@ account's server holds stops and targets; `sync` reads back what it did.
 Only positions and orders on `symbol` carrying `magic` belong to this broker,
 and nothing is sent while the terminal is logged in to any account but
 `login`. The broker's answer to a send is one of four: done; refused; not now,
-kept and sent again after `retry_seconds`; or possibly done, looked for at the
+kept and sent again after a wait that doubles from `retry_seconds`; or
+possibly done, looked for at the
 broker before it is counted or sent again.
 
 `mt5` is the `MetaTrader5` module, or anything with the same calls.
@@ -64,6 +65,9 @@ NEEDS_ACTION = {
     "TRADE_DISABLED": "trading is disabled for the symbol or the account",
 }
 DEFAULT_RETRY_SECONDS = 15.0
+#: The wait doubles with each answer, so a market closed for hours is asked
+#: every few minutes rather than every few seconds.
+DEFAULT_RETRY_MAX_SECONDS = 300.0
 
 
 class BrokerUnavailable(RuntimeError):
@@ -89,6 +93,7 @@ class Queued:
     unanswered: bool = False     # a send may have been carried out, so look before resending
     problem: str = ""            # why it is still waiting
     not_before: float = 0.0      # clock time before which it is not sent again
+    waits: int = 0               # "not now" answers so far, which lengthen the wait
 
 
 @dataclass(slots=True)
@@ -131,6 +136,7 @@ class LiveBroker:
         notify: Notifier,
         deviation: int = 20,
         retry_seconds: float = DEFAULT_RETRY_SECONDS,
+        retry_max_seconds: float = DEFAULT_RETRY_MAX_SECONDS,
         clock: Callable[[], float] = _time.monotonic,
     ):
         self.mt5 = mt5
@@ -141,6 +147,7 @@ class LiveBroker:
         self.notify = notify
         self.deviation = int(deviation)
         self.retry_seconds = float(retry_seconds)
+        self.retry_max_seconds = float(retry_max_seconds)
         self.clock = clock
         self.positions: list[Position] = []
         self.trades: list[Trade] = []
@@ -153,6 +160,7 @@ class LiveBroker:
         self._exit_announced: set[int] = set()      # closes whose exit_intent has gone out
         self._modifying: dict[int, tuple[float | None, float | None]] = {}
         self._due: dict[tuple[str, int], float] = {}  # (action, ticket) -> clock time of next try
+        self._waits: dict[tuple[str, int], int] = {}  # (action, ticket) -> "not now" answers so far
         self._leftovers: dict[int, Position] = {}   # positions not the strategy's, still to close
         self._known: set[int] = set()               # every ticket this broker has taken on
         self._reported: set[int] = set()            # untracked tickets already reported
@@ -331,7 +339,8 @@ class LiveBroker:
             return True
         if order.limit_price is not None and _voided(order, tick.bid):
             self.cancelled.append(order)
-            self.notify.emit(ORDER_CANCELLED, **_describe(order), reason="void level reached")
+            self.notify.emit(ORDER_CANCELLED, **_describe(order), limit=self._limit_of(order),
+                             reason="void level reached")
             return True
         if order.limit_price is None or _limit_reached(order, tick):
             return self._fill(entry, tick)
@@ -440,19 +449,32 @@ class LiveBroker:
         if answer.status == UNANSWERED:
             return                               # gone: the next sync reads whether it filled
         self._resting.remove(resting)
-        self._due.pop(("remove", resting.ticket), None)
+        self._settled("remove", resting.ticket)
         self.cancelled.append(resting.order)
         self.notify.emit(ORDER_CANCELLED, **_describe(resting.order), ticket=resting.ticket,
-                         reason=reason)
+                         limit=self._limit_of(resting.order), reason=reason)
 
     def _later(self, entry: Queued, answer: Answer) -> bool:
         """Keep an order the broker answered "not now", to be sent again after the wait."""
         entry.problem = answer.reason
-        entry.not_before = self.clock() + self.retry_seconds
+        entry.waits += 1
+        entry.not_before = self.clock() + self._backoff(entry.waits)
         return False
 
     def _wait(self, action: str, ticket: int) -> None:
-        self._due[(action, ticket)] = self.clock() + self.retry_seconds
+        """Put off a close, move or removal the broker answered "not now"."""
+        key = (action, ticket)
+        self._waits[key] = self._waits.get(key, 0) + 1
+        self._due[key] = self.clock() + self._backoff(self._waits[key])
+
+    def _backoff(self, waits: int) -> float:
+        """The wait after `waits` answers: doubling, never past the maximum."""
+        return min(self.retry_seconds * 2 ** (waits - 1), self.retry_max_seconds)
+
+    def _settled(self, action: str, ticket: int) -> None:
+        """The request got through: it is owed no more tries."""
+        self._due.pop((action, ticket), None)
+        self._waits.pop((action, ticket), None)
 
     def _reject(self, order: OrderRequest, reason: str, **detail) -> None:
         self.rejected.append((order, reason))
@@ -537,7 +559,7 @@ class LiveBroker:
                 self._wait("close", position.id)
             return None
         self._closing.pop(position.id, None)
-        self._due.pop(("close", position.id), None)
+        self._settled("close", position.id)
         if outcome == REFUSED:
             self._exit_announced.discard(position.id)
             return None
@@ -677,6 +699,7 @@ class LiveBroker:
             self._resting.remove(resting)
             self.cancelled.append(resting.order)
             self.notify.emit(ORDER_CANCELLED, **_describe(resting.order), ticket=resting.ticket,
+                             limit=self._limit_of(resting.order),
                              reason=resting.withdraw or f"order state {row.state} at the broker")
             return
         ticket = int(row.position_id)
@@ -709,8 +732,8 @@ class LiveBroker:
         self.positions.remove(position)
         self._closing.pop(position.id, None)
         self._modifying.pop(position.id, None)
-        self._due.pop(("close", position.id), None)
-        self._due.pop(("modify", position.id), None)
+        self._settled("close", position.id)
+        self._settled("modify", position.id)
         self._exit_announced.discard(position.id)
         self.trades.append(trade)
         self.notify.emit(POSITION_CLOSED, **trade.as_row(), ticket=position.id)
@@ -874,7 +897,7 @@ class LiveBroker:
         if outcome in (LATER, UNANSWERED):
             return
         del self._leftovers[position.id]
-        self._due.pop(("close", position.id), None)
+        self._settled("close", position.id)
         if outcome == DONE:
             self._leftover_closed(position)
 
@@ -903,6 +926,10 @@ class LiveBroker:
         if int(info.login) != self.login:
             raise AccountChanged(self.login, int(info.login))
         return info
+
+    def _limit_of(self, order: OrderRequest) -> float | None:
+        """A limit order's level as the broker holds it, rounded to the tick."""
+        return None if order.limit_price is None else self.instrument.round_price(order.limit_price)
 
     def _send(self, request: dict) -> Answer:
         """Send one request, once the terminal is confirmed on the traded account,

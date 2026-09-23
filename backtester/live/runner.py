@@ -37,6 +37,7 @@ from ..core.types import Bar, OrderRequest, Position, Side
 from ..data.loader import validate_bars
 from ..utils import timeframes
 from .broker import (
+    DEFAULT_RETRY_MAX_SECONDS,
     DEFAULT_RETRY_SECONDS,
     BrokerUnavailable,
     LiveBroker,
@@ -92,6 +93,7 @@ class LiveRunner:
         reconnect: Callable[[], None] | None = None,
         reconnect_seconds: float = 30.0,
         retry_seconds: float = DEFAULT_RETRY_SECONDS,
+        retry_max_seconds: float = DEFAULT_RETRY_MAX_SECONDS,
         clock: Callable[[], float] = _time.monotonic,
         log: Callable[[str], None] = print,
     ):
@@ -113,6 +115,7 @@ class LiveRunner:
         self.reconnect = reconnect
         self.reconnect_seconds = reconnect_seconds
         self.retry_seconds = retry_seconds
+        self.retry_max_seconds = retry_max_seconds
         self.clock = clock
         self.log = log
 
@@ -331,7 +334,8 @@ class LiveRunner:
         """
         sim = self.backtest.broker
         live = LiveBroker(self.mt5, self.symbol, self.instrument, self.magic, self.login,
-                          self.notify, self.deviation, self.retry_seconds, self.clock)
+                          self.notify, self.deviation, self.retry_seconds,
+                          self.retry_max_seconds, self.clock)
         rows, order_rows = live.our_positions(), live.our_orders()
 
         held, spare = _pair(sim.positions, rows, self._same_position)

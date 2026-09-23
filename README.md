@@ -28,7 +28,7 @@ backtester/
   cli.py        argument plumbing shared by the scripts
 scripts/        fetch, backtest, optimize, manage data, make synthetic data
 configs/        run configs (YAML) and per-symbol contract specs
-tests/          422 tests, ~7s
+tests/          423 tests, ~7s
 data/           bar store (gitignored)
 runs/           saved backtest results (gitignored)
 ```
@@ -286,7 +286,7 @@ read from its `TRADE_RETCODE_*`:
 | answer | retcodes | what happens |
 |---|---|---|
 | done | `DONE`, `PLACED` | the order is tracked |
-| not now: certainly not carried out, may succeed shortly | `MARKET_CLOSED`, `PRICE_OFF`, `REQUOTE`, `PRICE_CHANGED`, `TOO_MANY_REQUESTS`, `TRADE_DISABLED`, `SERVER_DISABLES_AT`, `CLIENT_DISABLES_AT`, `FROZEN` | kept and sent again, no sooner than `--retry-seconds` (default 15) |
+| not now: certainly not carried out, may succeed shortly | `MARKET_CLOSED`, `PRICE_OFF`, `REQUOTE`, `PRICE_CHANGED`, `TOO_MANY_REQUESTS`, `TRADE_DISABLED`, `SERVER_DISABLES_AT`, `CLIENT_DISABLES_AT`, `FROZEN` | kept and sent again after a wait that doubles from `--retry-seconds` (default 15) up to `--retry-max-seconds` (default 300) |
 | possibly carried out | `TIMEOUT`, `CONNECTION`, `LOCKED`, `DONE_PARTIAL`, and no answer at all | looked for at the broker, by magic number and tag, among positions, resting orders and recent deals, and adopted if there; otherwise sent again on the next poll |
 | refused | everything else: invalid stops, no money, invalid volume, … | an immediate `order_rejected` |
 
@@ -298,7 +298,9 @@ whose void level was reached is cancelled, a limit the market already reached
 fills at market, and a stop or target already passed is refused. Its
 `order_intent` goes out once. One still unsent when its bar ends is rejected,
 the reason naming the last answer. Closes, stop moves and removals are kept
-the same way until they go through. Answers that need someone to act (Algo
+the same way until they go through. The doubling keeps a market closed for a
+weekend from being asked every few seconds; the cost is that the first try
+after it opens can be up to `--retry-max-seconds` late. Answers that need someone to act (Algo
 Trading off, automated trading disabled by the broker, trading disabled for
 the symbol) raise one retrying `error` naming the cause; any other "not now"
 raises nothing.
@@ -389,7 +391,7 @@ emitted), `kind`, `mode` (`shadow` or `live`), `strategy` and `symbol`:
 | `order_placed` | a limit resting at the broker: the intent's fields and `ticket` |
 | `order_filled` | a position opened: `ticket`, `side`, `volume`, `price`, `sl`, `tp`, `tag`, `entry_time` |
 | `order_rejected` | a refusal, or an entry still unsent when its bar ended (`reason` starts `not sent before its bar ended:` and names the last answer); an entry's fields and `reason`, or for an open position's request `ticket`, `action` (`close`, `modify`, `remove`) and `reason`. Never for a "not now" answer while it can still be retried |
-| `order_cancelled` | the order's fields, `ticket` if it rested, and `reason` |
+| `order_cancelled` | the order's fields including its `limit`, `ticket` if it rested, and `reason` |
 | `position_modified` | `ticket`, `sl_from`, `sl`, `tp_from`, `tp` |
 | `exit_intent` | a close about to be sent: `ticket`, `side`, `volume`, `price`, `reason`, `tag` |
 | `position_closed` | the trade: `ticket`, `side`, `volume`, `entry_time`, `entry_price`, `exit_time`, `exit_price`, `reason` (`STOP_LOSS`, `TAKE_PROFIT`, `STRATEGY`, `MARGIN_CALL`), `gross_pnl`, `commission`, `swap`, `net_pnl`, `sl`, `tp`, `tag`, and more; a position closed for not being the strategy's carries only `ticket`, `side`, `volume`, `tag` and `leftover: true` |
