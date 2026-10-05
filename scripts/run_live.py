@@ -12,9 +12,12 @@ backtest would, and then trades each new bar. `--paper` keeps stepping the
 backtest on live bars and sends nothing.
 
 The session directory `runs-live/<strategy>_<symbol>_<magic>/` holds
-`events.jsonl`, every event including each order before it is sent, and
-`state.json`, the latest snapshot. Events also go to the console. A failure
-to start is written to both files before the script exits.
+`events.jsonl`, every event including each order before it is sent,
+`state.json`, the latest snapshot, `session.json`, when the session's account
+opened, and `report/`, the backtest's run files and chart for everything
+stepped so far with the session's own layer on top. Events also go to the
+console. A failure to start is written to `events.jsonl` and `state.json`
+before the script exits.
 
 The wrapper stops it on Ctrl-C or SIGTERM, by creating the stop file. Exit
 status is 0 after a requested stop and 1 on failure. Credentials are read
@@ -40,8 +43,10 @@ from backtester.live import (  # noqa: E402
     BrokerUnavailable,
     ConsoleListener,
     JsonlListener,
+    LiveReport,
     LiveRunner,
     Notifier,
+    SessionStart,
     StateFile,
 )
 from backtester.live.broker import (  # noqa: E402
@@ -135,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
                               f"(default {DEFAULT_RETRY_MAX_SECONDS:g})")
     trading.add_argument("--allow-real", action="store_true",
                          help="permit a real-money account; refused otherwise")
+    trading.add_argument("--reset-account", action="store_true",
+                         help="open the session's account afresh at the next bar")
 
     output = parser.add_argument_group("reporting")
     output.add_argument("--margin-stale-days", type=int, default=DEFAULT_STALE_AFTER_DAYS,
@@ -143,6 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
     output.add_argument("--connect-timeout", type=float, default=CONNECT_SECONDS,
                         help="seconds to wait for the terminal to answer a login "
                              f"(default {CONNECT_SECONDS:g})")
+    output.add_argument("--chart-timeframe",
+                        help="timeframe the report's chart draws a strategy without its own "
+                             "chart at (default: the run's)")
     output.add_argument("--stop-file", help="exit cleanly once this file exists")
     output.add_argument("--quiet", "-q", action="store_true", help="no event lines on the console")
     return parser
@@ -216,12 +226,14 @@ def prepare(mt5, args, config, strategy_class, symbol, timeframe, magic, notify,
         )
 
     stop_file = Path(args.stop_file) if args.stop_file else session / "stop"
+    execution = cli.execution_from(config)
     print(
         f"{strategy.describe()} on {symbol} {timeframe}\n"
         f"  account  {account.login} @ {account.server} "
         f"({trade_mode_name(mt5, account.trade_mode)})\n"
         f"  magic    {magic}{'   PAPER: nothing is sent' if args.paper else ''}\n"
         f"  session  {session}\n"
+        f"  report   {session / 'report' / 'chart.html'}\n"
         f"  stop     create {stop_file}",
         flush=True,
     )
@@ -235,13 +247,18 @@ def prepare(mt5, args, config, strategy_class, symbol, timeframe, magic, notify,
         magic=magic,
         notify=notify,
         instrument=instrument,
-        execution=cli.execution_from(config),
+        execution=execution,
         engine=cli.engine_from(config),
         deviation=args.deviation,
         poll_seconds=args.poll,
         paper=args.paper,
         stop_file=stop_file,
         state=state,
+        session=SessionStart(session / "session.json", execution.initial_balance,
+                             reset=args.reset_account),
+        report=LiveReport(session / "report", execution.__dict__,
+                          events_path=session / "events.jsonl",
+                          chart_timeframe=args.chart_timeframe),
         margin_stale_days=args.margin_stale_days,
         retry_seconds=args.retry_seconds,
         retry_max_seconds=args.retry_max_seconds,

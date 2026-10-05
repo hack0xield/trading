@@ -77,6 +77,8 @@ try {
   console.log(`  zone rows   : ${byId.ztbody ? byId.ztbody.children.length : "n/a"}`);
   console.log(`  pivot rows  : ${byId.ptbody ? byId.ptbody.children.length : "n/a"}`);
   console.log(`  crossing rows: ${byId.ctbody ? byId.ctbody.children.length : "n/a"}`);
+  console.log(`  live blocks : ${byId.live && !byId.live.hidden ? byId.live.children.length : 0}`);
+  console.log(`  live logs   : ${byId.liveLog ? byId.liveLog.children.length : 0}`);
 } catch (e) {
   console.log(`FAIL: ${e.name}: ${e.message}`);
   console.log((e.stack || "").split("\n").slice(0, 4).join("\n"));

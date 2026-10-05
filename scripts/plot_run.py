@@ -40,9 +40,12 @@ from backtester.utils.timeutil import parse_dt  # noqa: E402
 
 TEMPLATE_PATH = Path(__file__).resolve().parent / "plot_run_template.html"
 STYLE_PATH = Path(__file__).resolve().parent / "chart_style.css"
+LIVE_PATH = Path(__file__).resolve().parent / "live_layer.js"
 
 
-def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
+def build_payload(
+    run_dir: Path, data_uri: str, timeframe: str | None, bars=None, live: dict | None = None
+) -> dict:
     with open(run_dir / "summary.json", "r", encoding="utf-8") as fh:
         summary = json.load(fh)
 
@@ -55,14 +58,15 @@ def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
     # bars onto 25 distinct values and draws a staircase instead of a price.
     digits = load_instrument(symbol).digits
 
-    bars = load_bars(
-        symbol,
-        source_tf,
-        data=data_uri,
-        start=period.get("start"),
-        end=period.get("end"),
-        validate=False,
-    )
+    if bars is None:
+        bars = load_bars(
+            symbol,
+            source_tf,
+            data=data_uri,
+            start=period.get("start"),
+            end=period.get("end"),
+            validate=False,
+        )
     # Plotting every M15 bar would be ~100k points and a 400k-pixel canvas, so
     # coarsen for display. Trades keep their real timestamps and are placed on
     # the bar that contains them.
@@ -104,6 +108,7 @@ def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
         "params": summary.get("params", {}),
         "times": times,
         "digits": digits,
+        "open": [round(b.open, digits) for b in bars],
         "close": [round(b.close, digits) for b in bars],
         "high": [round(b.high, digits) for b in bars],
         "low": [round(b.low, digits) for b in bars],
@@ -116,6 +121,7 @@ def build_payload(run_dir: Path, data_uri: str, timeframe: str | None) -> dict:
             "max_drawdown_pct": metrics.get("max_drawdown_pct", 0.0),
             "initial_balance": metrics.get("initial_balance", 0.0),
         },
+        "live": live,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
 
@@ -146,7 +152,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def render(
-    run_dir: Path, data_uri: str, timeframe: str | None, out: Path | None = None
+    run_dir: Path,
+    data_uri: str,
+    timeframe: str | None,
+    out: Path | None = None,
+    bars=None,
+    live: dict | None = None,
 ) -> Path:
     """Write `chart.html` for a saved run. Returns the path.
 
@@ -154,7 +165,7 @@ def render(
     which is what makes a chart part of saving a run rather than a second
     command to remember.
     """
-    payload = build_payload(run_dir, data_uri, timeframe)
+    payload = build_payload(run_dir, data_uri, timeframe, bars, live)
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     # `</script>` inside the JSON would end the block early; `<` escaping is the
@@ -168,6 +179,7 @@ def render(
         template.replace("/*__DATA__*/null", blob)
         .replace("__TITLE__", title)
         .replace("/*__STYLE__*/", STYLE_PATH.read_text(encoding="utf-8"))
+        .replace("/*__LIVE__*/", LIVE_PATH.read_text(encoding="utf-8"))
     )
 
     out = out or run_dir / "chart.html"

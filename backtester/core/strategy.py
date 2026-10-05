@@ -61,14 +61,24 @@ class Strategy:
     def on_finish(self, ctx: Context) -> None:
         """Called after the last bar, before open positions are force-closed."""
 
-    def chart(self, run_dir, data_uri: str, timeframe: str):
+    def chart(self, run_dir, data_uri: str, timeframe: str, live: dict | None = None):
         """Render this run's chart, or return None for the default one.
 
         A strategy built on a body of analysis usually already has a chart for
         that analysis, and the useful picture is that chart with the trades on
         it — not a second, plainer one drawn from the trade list alone. This is
         where a strategy says so. Called after the run directory is written, so
-        `trades.csv` and the artifacts are already on disk.
+        `trades.csv` and the artifacts are already on disk. `live` is a live
+        session's layer for the page (`backtester/live/report.py`), None in a
+        backtest.
+        """
+        return None
+
+    def status(self) -> dict | None:
+        """Where the strategy stands now, for a live session's page.
+
+        A dict with at least `phase` (a short identifier) and `label` (one line
+        for a person), or None for a strategy that does not say.
         """
         return None
 

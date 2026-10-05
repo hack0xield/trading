@@ -22,6 +22,7 @@ from .zones import ZoneVersion, summarise
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 TEMPLATE_PATH = SCRIPTS / "zone_chart_template.html"
 STYLE_PATH = SCRIPTS / "chart_style.css"
+LIVE_PATH = SCRIPTS / "live_layer.js"
 
 Span = tuple[ZoneVersion, int, int]
 
@@ -42,6 +43,7 @@ def build_payload(
     trades: list[dict] = (),
     backtest: dict | None = None,
     strategy: str = "",
+    live: dict | None = None,
 ) -> dict:
     """Everything the chart page needs, as one JSON-serialisable dict."""
     stats = summarise(spans, bars)
@@ -74,6 +76,7 @@ def build_payload(
         "fmzPct": round(fmz_pct, 4),
         "deviation": deviation,
         "times": [int(b.time.timestamp()) for b in bars],
+        "open": [round(b.open, 6) for b in bars],
         "close": [round(b.close, 6) for b in bars],
         "high": [round(b.high, 6) for b in bars],
         "low": [round(b.low, 6) for b in bars],
@@ -126,6 +129,7 @@ def build_payload(
         "backtest": backtest or None,
         "stats": stats,
         "caution": caution,
+        "live": live,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
 
@@ -140,6 +144,7 @@ def render_chart(payload: dict, title: str) -> str:
         .replace("/*__DATA__*/null", blob)
         .replace("__TITLE__", title)
         .replace("/*__STYLE__*/", STYLE_PATH.read_text(encoding="utf-8"))
+        .replace("/*__LIVE__*/", LIVE_PATH.read_text(encoding="utf-8"))
     )
 
 

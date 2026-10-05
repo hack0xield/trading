@@ -28,7 +28,7 @@ them, so the package still imports in the Wine prefix where neither exists.
 ## Working here
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                    # 423 tests, ~7s
+.venv/bin/python -m pytest tests/ -q                    # 436 tests, ~7s
 scripts/run_backtest.py --config configs/strategies/mz50.yaml --save
 scripts/run_backtest.py --list-strategies
 scripts/run-live.sh --config configs/strategies/mz50.yaml --paper    # Wine; drop --paper to trade
@@ -44,6 +44,11 @@ true when changing `backtester/live/` or the scripts.
 - **Session**: `runs-live/<strategy>_<symbol>_<magic>/` holds `events.jsonl`
   and `state.json`, the snapshot rewritten on every poll. `updated_at` is the
   heartbeat; in shadow the file's positions are the replay's (`source`).
+- **Account and report**: `session.json` fixes when the session's account
+  opened; only entries from then count, and in paper it is the balance
+  reported. `report/` is the backtest's run directory and chart for the bars so
+  far plus `live.json`, rewritten after every event; served at `/live/` on the
+  reports server.
 - **Account guard**: nothing is sent unless the terminal is still on the login
   the runner started with. A mismatch is an `error` and a retry, never a
   rejection.

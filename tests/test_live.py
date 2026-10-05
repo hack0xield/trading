@@ -82,7 +82,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, retry_seconds=15.0,
-         retry_max_seconds=300.0,
+         retry_max_seconds=300.0, session=None, report=None,
          **params):
     mt5 = FakeMT5(gold, config)
     tape = Tape(mt5, bars, closed)
@@ -98,7 +98,7 @@ def make(desk, gold, config, bars, closed=QUIET, paper=False, state=None, retry_
         mt5=mt5, feed=tape, strategy=MZ50Strategy(**{**desk, **params}), symbol="XAUUSD",
         timeframe="H4", start=START, magic=MAGIC, notify=notify, instrument=gold,
         execution=config, poll_seconds=0, paper=paper, state=state_file,
-        retry_seconds=retry_seconds, retry_max_seconds=retry_max_seconds,
+        session=session, report=report, retry_seconds=retry_seconds, retry_max_seconds=retry_max_seconds,
         clock=lambda: mt5.time, log=lambda _: None,
     )
     return runner, tape, mt5, recorder

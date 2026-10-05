@@ -9,7 +9,9 @@
 <div class="wrap">
   <h1 id="title">Backtest trades on price</h1>
   <p class="sub" id="subtitle"></p>
+  <section class="live" id="live" hidden></section>
 
+  <h2 class="section" id="statsHead" hidden></h2>
   <div class="stats" id="stats"></div>
 
   <div class="controls">
@@ -40,6 +42,7 @@
     <div class="legend" id="legend"></div>
     <p class="hint">Scroll sideways to move through time · hover for details · arrow keys pan when focused</p>
   </div>
+  <div id="liveLog"></div>
 
   <details>
     <summary>Table view — every trade</summary>
@@ -62,6 +65,7 @@
 
 <script>
 const DATA = /*__DATA__*/null;
+/*__LIVE__*/
 
 const PLOT_H = 430, XAXIS_H = 26, YAXIS_W = 66, PAD = 14;
 const state = { px: 4, filter: "all", scale: "fit" };
@@ -116,6 +120,7 @@ function measure() {
     if (t.i1 < view.i0 || t.i0 > view.i1) continue;
     lo = Math.min(lo, t.p0, t.p1); hi = Math.max(hi, t.p0, t.p1);
   }
+  for (const v of liveLevels(view.i0, view.i1)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   if (!isFinite(lo)) { lo = gLo; hi = gHi; }
   const s = (hi - lo) || 1;
   view.lo = lo - s * 0.08; view.hi = hi + s * 0.08;
@@ -290,18 +295,21 @@ function draw() {
     if (t.i1 < a || t.i0 > b) continue;
     drawn++;
     const c = t.pnl > 0 ? "var(--win)" : "var(--loss)";
+    const fade = liveFade(t);
     const x0 = x(t.i0), x1 = x(t.i1), y0 = y(t.p0), y1 = y(t.p1);
     plot.append(el("line", {
       x1: x0, y1: y0, x2: x1, y2: y1, stroke: c, "stroke-width": 2,
-      "stroke-linecap": "round", "stroke-opacity": 0.85,
+      "stroke-linecap": "round", "stroke-opacity": 0.85 * fade,
     }));
     // 2px surface ring keeps markers legible where they cross the price line.
-    plot.append(el("circle", { cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2 }));
+    plot.append(el("circle", { cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, opacity: fade }));
     const d = t.pnl > 0
       ? `M${x1},${y1 - 5.5} L${x1 + 5},${y1 + 4} L${x1 - 5},${y1 + 4} Z`
       : `M${x1},${y1 + 5.5} L${x1 + 5},${y1 - 4} L${x1 - 5},${y1 - 4} Z`;
-    plot.append(el("path", { d, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round" }));
+    plot.append(el("path", { d, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round", opacity: fade }));
   }
+
+  liveOverlay(plot, a, b, W);
 
   crosshair = el("line", {
     x1: 0, y1: 0, x2: 0, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden",
@@ -396,5 +404,6 @@ $("scroller").addEventListener("keydown", (ev) => {
 
 layout();
 draw();
+liveInit();
 $("foot").textContent = `${DATA.close.length.toLocaleString()} ${DATA.shownTf} bars · generated ${DATA.generated} by scripts/plot_run.py`;
 </script>

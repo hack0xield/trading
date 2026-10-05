@@ -35,8 +35,10 @@
 <div class="wrap">
   <h1 id="title">Margin zones</h1>
   <p class="sub" id="subtitle"></p>
+  <section class="live" id="live" hidden></section>
 
   <div id="caution"></div>
+  <h2 class="section" id="statsHead" hidden></h2>
   <div class="stats" id="stats"></div>
   <p class="sub" id="statnote"></p>
 
@@ -52,6 +54,10 @@
     <div class="ctl">
       <span>Rollover</span>
       <div class="seg" id="roll" role="group" aria-label="Show rollover points"></div>
+    </div>
+    <div class="ctl">
+      <span>Price</span>
+      <div class="seg" id="pricekind" role="group" aria-label="How to draw price"></div>
     </div>
     <div class="ctl" id="trades-ctl" hidden>
       <span>Orders</span>
@@ -77,6 +83,7 @@
   </div>
 
   <div class="readout" id="readout"></div>
+  <div id="liveLog"></div>
 
   <details>
     <summary>Zone versions — every zone the run held, and when it held it</summary>
@@ -144,6 +151,7 @@
 
 <script>
 const DATA = /*__DATA__*/null;
+/*__LIVE__*/
 
 const PLOT_H = 460, XAXIS_H = 26, YAXIS_W = 74, PAD = 14;
 const ZONES = DATA.zones || [];
@@ -154,6 +162,7 @@ const state = {
   px: 4, filter: "both", scale: "fit",
   roll: ROLL.length > 0,
   trades: TRADES.length > 0,
+  price: LIVE && DATA.open ? "candles" : "line",
 };
 const N = DATA.close.length;
 
@@ -230,6 +239,7 @@ function measure() {
       lo = Math.min(lo, t.p0, t.p1); hi = Math.max(hi, t.p0, t.p1);
     }
   }
+  for (const v of liveLevels(view.i0, view.i1)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   if (!isFinite(lo)) { lo = gLo; hi = gHi; }
   const s = (hi - lo) || 1;
   view.lo = lo - s * 0.06; view.hi = hi + s * 0.06;
@@ -383,6 +393,10 @@ function controls() {
     seg($("trades"), [[true, "Show"], [false, "Hide"]], state.trades,
         (v) => { state.trades = v; draw(); });
   }
+  if (DATA.open) {
+    seg($("pricekind"), [["line", "Line"], ["candles", "Candles"]], state.price,
+        (v) => { state.price = v; draw(); });
+  }
 }
 
 // ---- render -----------------------------------------------------------
@@ -454,14 +468,34 @@ function draw() {
     }
   }
 
-  // Price.
-  let band = "", line = "";
-  for (let i = a; i <= b; i++) band += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.high[i]).toFixed(1);
-  for (let i = b; i >= a; i--) band += "L" + x(i).toFixed(1) + "," + y(DATA.low[i]).toFixed(1);
-  plot.append(el("path", { d: band + "Z", fill: "var(--price)", "fill-opacity": 0.10, stroke: "none" }));
-  for (let i = a; i <= b; i++) line += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.close[i]).toFixed(1);
-  plot.append(el("path", { d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
-                           "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  // Price. Candles need room, so at the farthest zoom they fall back to the line.
+  if (state.price === "candles" && DATA.open && state.px >= 4) {
+    // Monochrome: blue and red already mean zone direction. A rising candle
+    // is hollow, a falling one filled.
+    let wicks = "";
+    const bw = Math.max(1, state.px * 0.6);
+    for (let i = a; i <= b; i++) {
+      const xx = x(i).toFixed(1);
+      wicks += `M${xx},${y(DATA.high[i]).toFixed(1)}L${xx},${y(DATA.low[i]).toFixed(1)}`;
+    }
+    plot.append(el("path", { d: wicks, stroke: "var(--price)", "stroke-width": 1 }));
+    for (let i = a; i <= b; i++) {
+      const o = DATA.open[i], c = DATA.close[i];
+      const top = y(Math.max(o, c)), h = Math.max(1, Math.abs(y(o) - y(c)));
+      plot.append(el("rect", {
+        x: x(i) - bw / 2, y: top, width: bw, height: h,
+        fill: c >= o ? "var(--surface-1)" : "var(--price)", stroke: "var(--price)", "stroke-width": 1,
+      }));
+    }
+  } else {
+    let band = "", line = "";
+    for (let i = a; i <= b; i++) band += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.high[i]).toFixed(1);
+    for (let i = b; i >= a; i--) band += "L" + x(i).toFixed(1) + "," + y(DATA.low[i]).toFixed(1);
+    plot.append(el("path", { d: band + "Z", fill: "var(--price)", "fill-opacity": 0.10, stroke: "none" }));
+    for (let i = a; i <= b; i++) line += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.close[i]).toFixed(1);
+    plot.append(el("path", { d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
+                             "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  }
 
   // Daily CFD rollover points: an observation, subordinate to price.
   const tA = DATA.times[a], tB = DATA.times[b];
@@ -482,19 +516,21 @@ function draw() {
     for (const t of TRADES) {
       if (t.i1 < a || t.i0 > b) continue;
       const c = t.pnl > 0 ? "var(--trade-win)" : "var(--trade-loss)";
+      const fade = liveFade(t);
       const x0 = x(t.i0), x1 = x(t.i1), y0 = y(t.p0), y1 = y(t.p1);
       plot.append(el("line", {
         x1: x0, y1: y0, x2: x1, y2: y1, stroke: c, "stroke-width": 2,
-        "stroke-linecap": "round", "stroke-opacity": 0.9,
+        "stroke-linecap": "round", "stroke-opacity": 0.9 * fade,
       }));
       plot.append(el("circle", {
-        cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2,
+        cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, opacity: fade,
       }));
       const d = t.pnl > 0
         ? `M${x1},${y1 - 5}L${x1 + 5},${y1 + 4}L${x1 - 5},${y1 + 4}Z`
         : `M${x1},${y1 + 5}L${x1 + 5},${y1 - 4}L${x1 - 5},${y1 - 4}Z`;
       plot.append(el("path", {
         d, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round",
+        opacity: fade,
       }));
     }
   }
@@ -590,6 +626,8 @@ function draw() {
     plot.append(t);
   }
   plot.append(el("line", { x1: 0, y1: PLOT_H, x2: W, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  liveOverlay(plot, a, b, W);
 
   crosshair = el("line", { x1: 0, y1: 0, x2: 0, y2: PLOT_H, stroke: "var(--axis)",
                            "stroke-width": 1, visibility: "hidden" });
@@ -777,6 +815,7 @@ $("scroller").addEventListener("keydown", (ev) => {
 layout();
 draw();
 readoutIdle();
+liveInit();
 $("foot").textContent =
   `${N.toLocaleString()} ${DATA.timeframe} bars · ${ZONES.length} zone versions · ` +
   `generated ${DATA.generated}`;

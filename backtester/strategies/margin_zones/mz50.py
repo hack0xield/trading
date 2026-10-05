@@ -41,7 +41,15 @@ from ..registry import register
 from .crossing import DEFAULT_MAX_GAP_DAYS, Crossing, CrossingTracker
 from .margins import DEFAULT_INITIAL_RATIO, MARGIN_LOG, MarginLog, compute_zones, load_spec
 from .rollover import RolloverPoint
-from .zones import CHAIN, STRICT_EXTENSION, TP_CHAIN, ZoneVersion, zone_spans
+from .zones import (
+    CHAIN,
+    INITIAL,
+    STRICT_EXTENSION,
+    TP_CHAIN,
+    ZONE_INPUT_CHANGE,
+    ZoneVersion,
+    zone_spans,
+)
 
 KEEP_OPEN = "KEEP_OPEN"
 CLOSE_ON_CANDIDATE_UPDATE = "CLOSE_ON_CANDIDATE_UPDATE"
@@ -60,6 +68,36 @@ CANDIDATE_UPDATE = "candidate_update"
 LIMIT_RETEST = "chain_limit_retest"
 DAILY_CROSS = "chain_daily_cross"
 ZIGZAG_DAILY_CROSS = "zigzag_daily_cross"
+
+#: The journal's words for what the records name by code.
+ZONE_TEXT = {
+    INITIAL: "a new candidate",
+    STRICT_EXTENSION: "the candidate extended",
+    ZONE_INPUT_CHANGE: "the margin reading changed",
+}
+SIGNAL_TEXT = {
+    "entered": "entry ordered for the next open",
+    "ignored_open_trade": "ignored, a trade is already open",
+    "entry_beyond_target": "not taken, price is already past the target",
+    "invalid_trade_geometry": "not taken, stop, entry and target are out of order",
+}
+WARNING_TEXT = {
+    "warning": "first adverse close, a second one exits",
+    "confirmed": "second adverse close, exit at the next open",
+    "reset_zone_side": "back on the zone side, warning cleared",
+    "reset_on_level": "closed on the E50, warning cleared",
+    "reset_sequence_break": "gap in the daily sequence, warning cleared",
+}
+CHAIN_TEXT = {
+    f"created_{LIMIT_RETEST}": "created, a limit order rests at its E50",
+    f"created_{DAILY_CROSS}": "created, waits for a daily crossing of its E50",
+    "chain_target_already_reached": "not created, price is already at its target",
+    "limit_filled": "limit filled",
+    "chain_target_reached_without_entry": "cancelled, the target was reached before the limit filled",
+    "daily_entered": "entry ordered on a daily crossing",
+    "superseded_by_zigzag_signal": "cancelled, superseded by a ZigZag signal",
+    "end_of_data_cancel": "cancelled at the end of the data",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +224,8 @@ class MZ50Strategy(Strategy):
         self._fed = 0
         self._max_gap = max(0, int(p.max_gap_days))
         self._symbol, self._timeframe = ctx.symbol, ctx.timeframe
-        self._bars: list[Bar] = []
+        self._ctx = ctx
+        self._digits = ctx.instrument.digits
 
         self._open_signal: Crossing | None = None   # the live trade's origin
         self._pending: Crossing | None = None       # ordered, not yet filled
@@ -207,6 +246,7 @@ class MZ50Strategy(Strategy):
         self._chain: ChainStep | None = None        # a child zone awaiting entry
         self._chain_zones: list[tuple[ZoneVersion, int, int | None]] = []
         self._chain_rows: list[dict] = []
+        self._journal_rows: list[dict] = []
         self._next_chain_id = 1
 
     def _zones_for(self, candidate):
@@ -240,6 +280,9 @@ class MZ50Strategy(Strategy):
                 # The engine has no reason of its own for this; the record names
                 # it, and `_exit_taken` carries that across to `on_trade`.
                 self._exit_taken = self._exit_due
+                self._note("exit_at_open", f"leaving at the open, {self._px(event.price)}: "
+                           f"{self._exit_due.replace('_', ' ')}",
+                           getattr(self._open_signal, "zone", None))
                 ctx.close_all(ExitReason.STRATEGY)
             self._exit_due = None
 
@@ -284,6 +327,7 @@ class MZ50Strategy(Strategy):
             # A new version on this bar. If it strictly extends the leg the open
             # trade came from, variant B schedules the exit (§10).
             if after is not None and after is not before:
+                self._note_zone(after, before)
                 self._on_new_version(ctx, after)
         self._fed = index + 1
 
@@ -332,6 +376,12 @@ class MZ50Strategy(Strategy):
 
     def _record_warning(self, event: str, close: RolloverPoint) -> None:
         signal = self._open_signal
+        self._note(
+            "two_close",
+            f"daily close {self._px(close.price)} on {close.day} against the trade's "
+            f"E50 {self._px(signal.zone.e50)}: {WARNING_TEXT.get(event, event.replace('_', ' '))}",
+            signal.zone,
+        )
         self._warning_rows.append({
             "event": event,
             "entry_mode": getattr(signal, "mode", ZIGZAG_DAILY_CROSS),
@@ -369,7 +419,15 @@ class MZ50Strategy(Strategy):
                 ctx.modify(position, sl=stop)
             self._open_signal, self._pending = self._pending, None
             self._entry_time = position.entry_time
+            self._note(
+                "entered",
+                f"{'LONG' if position.side is Side.BUY else 'SHORT'} {position.volume:g} at "
+                f"{self._px(position.entry_price)}, SL {self._px(position.sl)}, "
+                f"TP {self._px(position.tp)}",
+                self._open_signal.zone,
+            )
         elif ctx.is_flat:
+            self._note("entry_not_filled", "the ordered entry did not fill", self._pending.zone)
             self._pending = None
 
     def _on_new_version(self, ctx: Context, version) -> None:
@@ -495,6 +553,7 @@ class MZ50Strategy(Strategy):
                 self._record_chain("daily_entered", zone, bar.close)
                 self._close_chain(ctx, filled=True)
             self._signal_rows.append(entry.as_signal_row(status))
+            self._note_signal(entry, f"chain step d{zone.chain_depth} daily crossing", status)
             return
 
     def _close_chain(self, ctx: Context, filled: bool = False) -> None:
@@ -509,6 +568,13 @@ class MZ50Strategy(Strategy):
         self._chain = None
 
     def _record_chain(self, event: str, zone: ZoneVersion, price: float) -> None:
+        self._note(
+            "chain",
+            f"chain step d{zone.chain_depth} ({'LONG' if zone.direction > 0 else 'SHORT'}, "
+            f"E50 {self._px(zone.e50)}, MZ0 {self._px(zone.mz0)}): "
+            f"{CHAIN_TEXT.get(event, event.replace('_', ' '))}; price {self._px(price)}",
+            zone,
+        )
         self._chain_rows.append({
             "event": event,
             "zone_id": zone.zone_id,
@@ -548,6 +614,7 @@ class MZ50Strategy(Strategy):
             self._used_zones.add(crossing.zone.zone_id)
             status = "entered"
         self._signal_rows.append(crossing.as_signal_row(status))
+        self._note_signal(crossing, f"daily crossing of E50 on {crossing.current.day}", status)
 
     def _target(self, zone: ZoneVersion) -> float:
         return zone.mz0 if self.p.take_profit == NEAR else zone.mz100
@@ -648,6 +715,13 @@ class MZ50Strategy(Strategy):
             "execution_mode": "next_open",
             "ambiguous_tp_sl": bool(ambiguous),
         })
+        self._note(
+            "closed",
+            f"{trade.side.value} closed at {self._px(trade.exit_price)}: "
+            f"{self._trade_rows[-1]['exit_reason'].replace('_', ' ')}, "
+            f"P&L {trade.net_pnl:+,.2f}",
+            signal.zone,
+        )
         # §9: a fresh crossing is required after any exit.
         self._open_signal = self._pending = None
         self._entry_time = None
@@ -670,7 +744,6 @@ class MZ50Strategy(Strategy):
     # ---------------------------------------------------------------- records
 
     def on_finish(self, ctx: Context) -> None:
-        self._bars = list(ctx.history)
         z = self.tracker.zones
         true_count = sum(1 for c in self.tracker.crossings if c.toward_zone)
         ctx.log(
@@ -738,19 +811,127 @@ class MZ50Strategy(Strategy):
             out["warnings"] = self._warning_rows
         if self._chain_rows:
             out["chain"] = self._chain_rows
+        if self._journal_rows:
+            out["journal"] = self._journal_rows
         return out
+
+    # ---------------------------------------------------------------- journal
+
+    def _note(self, event: str, detail: str, zone: ZoneVersion | None = None) -> None:
+        """One line of the journal: what the strategy decided, and why."""
+        self._journal_rows.append({
+            "time": self._ctx.now.isoformat() if self._ctx.now else "",
+            "event": event,
+            "zone_id": zone.zone_id if zone is not None else "",
+            "chain_depth": zone.chain_depth if zone is not None else "",
+            "detail": detail,
+        })
+
+    def _note_zone(self, zone: ZoneVersion, before: ZoneVersion | None) -> None:
+        reason = ZONE_TEXT.get(zone.event_type, zone.event_type.replace("_", " "))
+        if before is not None:
+            reason += f", replaces z{before.zone_id}"
+        self._note(
+            "zone_created",
+            f"{zone.kind} candidate {self._px(zone.anchor_price)}: E50 {self._px(zone.e50)}, "
+            f"MZ0 {self._px(zone.mz0)}, MZ100 {self._px(zone.mz100)} ({reason})",
+            zone,
+        )
+
+    def _note_signal(self, signal, what: str, status: str) -> None:
+        self._note(
+            "signal",
+            f"{'LONG' if signal.is_long else 'SHORT'} {what}, E50 {self._px(signal.level)}: "
+            f"{SIGNAL_TEXT.get(status, status.replace('_', ' '))}",
+            signal.zone,
+        )
+
+    def _px(self, value: float | None) -> str:
+        return "none" if value is None else f"{value:.{self._digits}f}"
+
+    # ----------------------------------------------------------------- status
+
+    def status(self) -> dict | None:
+        """The trade, order or signal the strategy is waiting on."""
+        if not hasattr(self, "tracker"):
+            return None
+        zone = None
+        warning = None
+        if not self.p.place_orders:
+            phase, label = "no_orders", "place_orders is false: drawing the zones, trading nothing"
+        elif self._open_signal is not None:
+            zone = self._open_signal.zone
+            side = "LONG" if self._open_signal.is_long else "SHORT"
+            if self._exit_due:
+                phase = "exit_due"
+                label = f"{side} position: exit at the next open ({self._exit_due.replace('_', ' ')})"
+            elif self._warning is not None:
+                phase = "exit_warning"
+                warning = {"day": self._warning.day.isoformat(), "price": self._warning.price}
+                label = (
+                    f"{side} position: first adverse daily close {self._px(self._warning.price)} "
+                    f"on {self._warning.day} past its E50 {self._px(zone.e50)}; a second one exits"
+                )
+            else:
+                phase, label = "in_position", f"{side} position open from zone z{zone.zone_id}"
+        elif self._pending is not None:
+            zone = self._pending.zone
+            phase, label = "entry_ordered", "entry ordered, it fills at the next open"
+        elif self._chain is not None:
+            zone = self._chain.zone
+            side = "BUY" if zone.direction > 0 else "SELL"
+            if self._chain.mode == LIMIT_RETEST:
+                phase = "limit_resting"
+                label = (
+                    f"limit {side} resting at E50 {self._px(zone.e50)} for chain step "
+                    f"d{zone.chain_depth}; voided at MZ0 {self._px(zone.mz0)}"
+                )
+            else:
+                phase = "chain_waiting_cross"
+                label = (
+                    f"chain step d{zone.chain_depth} waits for two daily closes across "
+                    f"E50 {self._px(zone.e50)}"
+                )
+        else:
+            zone = self.tracker.active
+            phase = "waiting_signal"
+            label = (
+                "waiting for a ZigZag candidate" if zone is None else
+                f"waiting for a daily crossing of E50 {self._px(zone.e50)} toward zone "
+                f"z{zone.zone_id} ({'LONG' if zone.direction > 0 else 'SHORT'})"
+            )
+        candidate = self.tracker.zones.candidate
+        return {
+            "phase": phase,
+            "label": label,
+            "zone": None if zone is None else {
+                "id": zone.zone_id, "kind": zone.kind,
+                "direction": "LONG" if zone.direction > 0 else "SHORT",
+                "anchor": zone.anchor_price, "e50": zone.e50, "mz0": zone.mz0,
+                "mz100": zone.mz100, "source": zone.source,
+            },
+            "generation": zone.chain_depth if zone is not None else 0,
+            "chain_id": zone.chain_id if zone is not None else None,
+            "warning": warning,
+            "exit_due": self._exit_due,
+            "candidate": None if candidate is None else {
+                "kind": candidate.kind, "price": candidate.price,
+                "confirm_at": self._confirm_at(candidate),
+            },
+        }
 
     # ------------------------------------------------------------- the chart
 
-    def chart(self, run_dir, data_uri: str, timeframe: str):
+    def chart(self, run_dir, data_uri: str, timeframe: str, live: dict | None = None):
         """The margin-zone chart, drawn from this run's own forward pass."""
         from .report import build_payload, read_metrics, read_trades, write_chart
 
-        if not self._bars:
+        bars = list(self._ctx.history) if hasattr(self, "_ctx") else []
+        if not bars:
             return None
         p = self.p
         z = self.tracker.zones
-        last = len(self._bars) - 1
+        last = len(bars) - 1
         spans = zone_spans(z.versions, z.superseded, last)
         spans += [
             (zone, start, last if until is None else until)
@@ -759,7 +940,7 @@ class MZ50Strategy(Strategy):
         payload = build_payload(
             symbol=self._symbol,
             timeframe=self._timeframe,
-            bars=self._bars,
+            bars=bars,
             pivots=z.pivots,
             spans=spans,
             spec=self._spec,
@@ -771,9 +952,10 @@ class MZ50Strategy(Strategy):
             confirm_at=self._confirm_at(z.candidate),
             rollover=self.tracker.points,
             crossings=self.tracker.crossings,
-            trades=read_trades(run_dir, self._bars),
+            trades=read_trades(run_dir, bars),
             backtest=read_metrics(run_dir),
             strategy=self._label(),
+            live=live,
         )
         return write_chart(run_dir, payload)
 

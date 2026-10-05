@@ -17,7 +17,11 @@ replay to close it.
 Each new bar runs the engine's six steps split across the boundary: stops,
 targets and limit fills since the last bar are read back, `on_trade` and
 `on_bar` see the finished bar, then queued orders go out at the new open around
-`on_bar_open`. Every poll rewrites `state.json`.
+`on_bar_open`. Every poll rewrites `state.json`; after any event the session
+report is written again.
+
+The session's account opens at the first bar the runner sees open
+(`SessionStart`), and counts only the strategy's entries from then on.
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from ..core.context import BarOpen
 from ..core.engine import Backtester, EngineConfig
 from ..core.instrument import Instrument
 from ..core.strategy import Strategy
-from ..core.types import Bar, OrderRequest, Position, Side
+from ..core.types import BacktestResult, Bar, EquityPoint, OrderRequest, Position, Side
 from ..data.loader import validate_bars
 from ..utils import timeframes
 from .broker import (
@@ -46,6 +50,7 @@ from .broker import (
     position_row,
     trade_mode_name,
 )
+from .account import SessionStart, session_account
 from .events import (
     BAR_CLOSED,
     ERROR,
@@ -57,9 +62,11 @@ from .events import (
     SHADOW,
     STARTED,
     STOPPED,
+    Event,
     Notifier,
 )
-from .state import DEFAULT_STALE_AFTER_DAYS, MarginWatch, StateFile
+from .report import LiveReport
+from .state import DEFAULT_STALE_AFTER_DAYS, MarginWatch, StateFile, utc_now
 
 
 class BarFeed(Protocol):
@@ -89,6 +96,8 @@ class LiveRunner:
         paper: bool = False,
         stop_file: str | Path | None = None,
         state: StateFile | None = None,
+        session: SessionStart | None = None,
+        report: LiveReport | None = None,
         margin_stale_days: int = DEFAULT_STALE_AFTER_DAYS,
         reconnect: Callable[[], None] | None = None,
         reconnect_seconds: float = 30.0,
@@ -111,6 +120,8 @@ class LiveRunner:
         self.paper = paper
         self.stop_file = Path(stop_file) if stop_file else None
         self.state = state
+        self.session = session
+        self.report = report
         self.margin = MarginWatch(strategy, margin_stale_days)
         self.reconnect = reconnect
         self.reconnect_seconds = reconnect_seconds
@@ -130,6 +141,11 @@ class LiveRunner:
         self._open_time: datetime | None = None
         self._seen_trades = 0
         self._last_reconnect = -math.inf
+        self._report_due = False
+        self._live_base: tuple[float, float, float, float] | None = None
+        self._live_curve: list[EquityPoint] = []
+        if report is not None:
+            notify.add(self._event_seen)
 
     @property
     def ctx(self):
@@ -152,6 +168,7 @@ class LiveRunner:
                     self.tick()
                 except BrokerUnavailable as exc:
                     self._unavailable(exc)
+                self.write_report()
                 self.write_state()
                 _time.sleep(self.poll_seconds)
         except KeyboardInterrupt:
@@ -201,6 +218,7 @@ class LiveRunner:
         )
         if not self.paper:
             self._handover(at_startup=True)
+        self.write_report()
         self.write_state()
 
     def tick(self) -> None:
@@ -214,6 +232,9 @@ class LiveRunner:
                 self._close(bar)
 
         if forming.time > self._open_time:
+            if self.session is not None and self.session.begin(forming.time, utc_now()):
+                self.log(f"session account opened at the {forming.time:%Y-%m-%d %H:%M} bar")
+                self._report_due = True
             if self.live is None and not self.paper:
                 self._handover(at_startup=False)
             if self.live is not None:
@@ -232,11 +253,49 @@ class LiveRunner:
         if self.stop_file is not None:
             self.stop_file.unlink(missing_ok=True)
         self.notify.emit(STOPPED, failure=self.failure)
+        self.write_report(running=False)
         self.write_state(running=False)
 
     def write_state(self, running: bool = True) -> None:
+        if self.state is None and self.report is None:
+            return
+        snapshot = self._snapshot()
         if self.state is not None:
-            self.state.write(running=running, failure=self.failure, **self._snapshot())
+            self.state.write(running=running, failure=self.failure, **snapshot)
+        if self.report is not None:
+            self.report.pulse(running=running, mode=snapshot["mode"], paper=self.paper,
+                              last_closed_bar=snapshot["last_closed_bar"],
+                              forming_bar=snapshot["forming_bar"], failure=self.failure)
+
+    def write_report(self, running: bool = True) -> None:
+        """Write the session report again if anything happened since the last one.
+
+        A report that fails is logged and left for the next event; trading carries on.
+        """
+        if self.report is None or not self.bars or not (self._report_due or not running):
+            return
+        self._report_due = False
+        try:
+            self.report.write(self._result(), self.strategy, self.bars, self._snapshot(), running)
+        except Exception as exc:  # the report must never stop trading
+            self.report.failed(exc)
+
+    def _event_seen(self, event: Event) -> None:
+        self._report_due = True
+
+    def _result(self) -> BacktestResult:
+        """The strategy's record so far: the replay's, then the account's once live.
+
+        After the handover the equity curve carries on from the replay's by the
+        account's own changes.
+        """
+        result = self.backtest.snapshot()
+        if self.live is not None:
+            result.trades = result.trades + self.live.trades
+            result.equity = result.equity + self._live_curve
+            if self._live_curve:
+                result.final_balance = self._live_curve[-1].balance
+        return result
 
     # --------------------------------------------------------------- the bars
 
@@ -321,6 +380,12 @@ class LiveRunner:
         self._seen_trades = len(self.live.trades)
 
     def _bar_closed(self, bar: Bar, balance: float, equity: float, open_positions: int) -> None:
+        if self.live is not None and self._live_base is not None:
+            replay_balance, replay_equity, account_balance, account_equity = self._live_base
+            self._live_curve.append(EquityPoint(
+                bar.time, replay_balance + balance - account_balance,
+                replay_equity + equity - account_equity, open_positions,
+            ))
         self.notify.emit(BAR_CLOSED, bar_time=bar.time, close=bar.close, balance=round(balance, 2),
                          equity=round(equity, 2), open_positions=open_positions)
 
@@ -359,6 +424,7 @@ class LiveRunner:
             live.submit(order)
 
         self.live = live
+        self._live_base = (sim.balance, sim.equity, self.balance or 0.0, self.equity or 0.0)
         self.ctx.broker = live
         self._seen_trades = 0
         self.notify.mode = LIVE
@@ -398,9 +464,11 @@ class LiveRunner:
         }
         if self.live is not None:
             live = self.live
-            return {**snapshot, "balance": live.balance, "equity": live.equity,
-                    "source": "account", "positions": live.position_rows(),
-                    "resting_orders": live.resting_rows(), "queued_orders": live.queued_rows()}
+            return self._with_session({
+                **snapshot, "balance": live.balance, "equity": live.equity,
+                "source": "account", "positions": live.position_rows(),
+                "resting_orders": live.resting_rows(), "queued_orders": live.queued_rows(),
+            })
 
         # The replay's book, priced at the last close: nothing here is on the account.
         sim = getattr(self.backtest, "broker", None)
@@ -417,8 +485,24 @@ class LiveRunner:
                     queued.append(order_row(order))
                 else:
                     resting.append({"ticket": None, **order_row(order)})
-        return {**snapshot, "balance": self.balance, "equity": self.equity, "source": "replay",
-                "positions": positions, "resting_orders": resting, "queued_orders": queued}
+        return self._with_session({
+            **snapshot, "balance": self.balance, "equity": self.equity, "source": "replay",
+            "positions": positions, "resting_orders": resting, "queued_orders": queued,
+        })
+
+    def _with_session(self, snapshot: dict) -> dict:
+        """Add the session's account; on paper it is the balance and equity reported."""
+        if self.session is None:
+            return snapshot
+        sim = getattr(self.backtest, "broker", None)
+        trades = (sim.trades if sim is not None else []) + (self.live.trades if self.live else [])
+        for row in snapshot["positions"]:
+            row["in_session"] = self.session.counts(row["entry_time"])
+        account = session_account(self.session, trades, snapshot["positions"])
+        snapshot["session"] = account
+        if self.paper:
+            snapshot["balance"], snapshot["equity"] = account["balance"], account["equity"]
+        return snapshot
 
     def _read_account(self) -> None:
         """The account's balance and equity, while no live broker is reading them."""

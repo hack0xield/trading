@@ -161,3 +161,37 @@
   tbody td { border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
   tbody tr:hover { background: var(--plane); }
   .foot { color: var(--muted); font-size: 11px; margin-top: 20px; }
+
+  /* ---- live session layer (scripts/live_layer.js) ---- */
+  h2.section {
+    font-size: 13px; font-weight: 600; color: var(--text-secondary);
+    margin: 0 0 12px; letter-spacing: 0;
+  }
+  .live { margin-bottom: 26px; }
+  .live-head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    font-size: 13px; color: var(--text-secondary); margin: 0 0 14px;
+  }
+  .live-head strong { color: var(--text-primary); }
+  .live-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--muted); }
+  .live-dot.running { background: var(--trade-win); }
+  .live-dot.stale { background: var(--loss); }
+  .live-cards { display: flex; flex-wrap: wrap; gap: 14px; }
+  .live-card {
+    flex: 1 1 360px; min-width: 0;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .live-card .stats { gap: 22px; margin-bottom: 0; }
+  .live-card .hero .value { font-size: 34px; }
+  .live-card .tile .value { font-size: 16px; }
+  .live-status { margin: 0 0 8px; font-size: 14px; }
+  .live-fact { margin: 4px 0 0; }
+  .live-pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--plane); color: var(--text-primary);
+  }
+  .live-pill.in_position, .live-pill.limit_resting, .live-pill.entry_ordered { border-color: var(--level); color: var(--level); }
+  .live-pill.exit_warning, .live-pill.exit_due { border-color: var(--loss); color: var(--loss); }
+  td.live-detail { text-align: left; white-space: normal; min-width: 320px; }
+  td.live-empty { text-align: left; color: var(--muted); }

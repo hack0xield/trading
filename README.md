@@ -339,13 +339,56 @@ runner.notify.add(lambda event: print(event.kind, event.data))
 An `error` the runner carries on through is delivered once, not again while the
 same message repeats within five minutes.
 
+### Watching a session
+
+**The session's account.** The replay trades history too, and none of that is
+the session's. The account opens at the first bar the runner sees open after
+it first starts, and is recorded in `session.json`; from then on it counts only
+the strategy's entries at or after that bar, from the config's
+`initial_balance`. A restart replays everything again and keeps the same
+account, so missed bars are caught up and no trade is counted twice.
+`--reset-account` opens a new one at the next bar. In paper mode this is the
+account: `state.json`'s `balance` and `equity` are its own. Live, they are the
+MT5 account's, and the session's figures are the strategy's record since the
+account opened.
+
+**The report.** `report/` in the session directory is what `run_backtest.py
+--save` writes for a run, over every bar replayed and stepped so far:
+`summary.json`, `trades.csv`, `equity.csv`, the strategy's tables, the casebook
+and `chart.html`. It is written again after every event (each closed bar, each
+order), about 0.15 s for mz50 over 2022–2026 on H4, and a failure to write it is
+logged and never stops trading. Next to them:
+
+- `live.json`, the page's live layer: the session's account, open positions,
+  resting and queued orders, the strategy's `status()`, its `journal` (why it
+  entered, exited, created and cancelled), the newest runner events, and the
+  last closed bar with its close in UTC.
+- `pulse.json`, rewritten every poll: the heartbeat, and which report is newest.
+
+The chart is the backtest's own with the live layer on top: the account and the
+strategy's state above it; the open position's entry, stop and target, a
+resting limit and its void level drawn to the right edge; where the account
+opened; trades from before it faded. The page asks for `pulse.json` every 30
+seconds and reloads, keeping its zoom and scroll, when a newer report exists.
+`../agents` serves it publicly on its reports server at
+`/live/<session>/`. To watch one on this machine, serve the directory, since
+a page opened as a file cannot read its pulse:
+
+```bash
+python3 -m http.server 8090 -d runs-live   # then /<session>/report/chart.html
+```
+
+A strategy without its own chart gets the default trade chart, drawn at the
+run's timeframe or `--chart-timeframe`.
+
 ### The session, as reporting reads it
 
 Written for the Telegram assistant in `../agents`, which starts and stops
 runners and reports on them. This is what both repositories rely on.
 
-**Where.** `runs-live/<strategy>_<symbol>_<magic>/`, holding `events.jsonl` and
-`state.json`. Sessions are found by scanning `runs-live/*/state.json` and
+**Where.** `runs-live/<strategy>_<symbol>_<magic>/`, holding `events.jsonl`,
+`state.json`, `session.json` (`live_from`, `initial_balance`, `created_at`) and
+`report/` (see "Watching a session"). Sessions are found by scanning `runs-live/*/state.json` and
 matching `config`. The magic number defaults to a hash of strategy and symbol,
 so a restart finds its own session.
 
@@ -370,9 +413,10 @@ once more on exit:
 | `mode` | `shadow` or `live`; null until the replay is done |
 | `account` | `login`, `server`, `trade_mode` (`demo`, `contest`, `REAL`) |
 | `last_closed_bar`, `forming_bar` | bar open times, on the broker's clock |
-| `balance`, `equity` | the account's |
+| `balance`, `equity` | the account's; in paper, the session's account |
+| `session` | the session's account: `live_from` (null until the first bar opens), `initial_balance`, `balance`, `equity`, `realised`, `floating`, `return_pct`, `trades`, `wins`, `losses`, `win_rate_pct`, `profit_factor` (null without a loss), `open_positions` |
 | `source` | `account`, or `replay` while in shadow: then the positions and orders below are the backtest's and none is on the account |
-| `positions` | `ticket`, `side`, `volume`, `price` (entry), `sl`, `tp`, `tag`, `entry_time`, `profit` (floating, null until read) |
+| `positions` | `ticket`, `side`, `volume`, `price` (entry), `sl`, `tp`, `tag`, `entry_time`, `profit` (floating, null until read), `in_session` (false for one entered before the session's account opened) |
 | `resting_orders` | `ticket`, `side`, `volume`, `limit`, `sl`, `tp`, `tag`, `void`, `withdrawing` |
 | `queued_orders` | `side`, `volume`, `order` (`market`/`limit`), `limit`, `sl`, `tp`, `void`, `tag`, `signal_time`, and live `unanswered` (it may be at the broker already) and `problem`: why it is still waiting, such as the broker's answer `Market closed (retcode 10018)`; routine at the daily break |
 | `margin` | `contract`, `as_of`, `maintenance`, `age_days`, `stale`, `stale_after_days`; null for a strategy without a margin log |

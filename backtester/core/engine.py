@@ -135,23 +135,32 @@ class Backtester:
             broker.finalize(last)
         self._flush_trades()
         broker.record_equity(last)
+        return self._result(
+            self.logs
+            + [f"run took {_time.perf_counter() - self._started:.2f}s"]
+            + [f"rejected: {reason}" for _, reason in broker.rejected[:20]]
+        )
 
+    def snapshot(self) -> BacktestResult:
+        """The result so far: open positions stay open and `on_finish` is not called."""
+        return self._result(list(self.logs))
+
+    def _result(self, logs: list[str]) -> BacktestResult:
+        broker = self.broker
         return BacktestResult(
             strategy=self.strategy.name,
             symbol=self.symbol,
             timeframe=self.timeframe,
             params=self.strategy.params,
-            trades=broker.trades,
-            equity=broker.equity_curve,
+            trades=list(broker.trades),
+            equity=list(broker.equity_curve),
             initial_balance=self.execution.initial_balance,
             final_balance=broker.balance,
             bars_processed=self.processed,
             start=self.bars[0].time,
-            end=last.time,
+            end=self.bars[self.processed - 1].time,
             artifacts=self.strategy.artifacts(),
-            logs=self.logs
-            + [f"run took {_time.perf_counter() - self._started:.2f}s"]
-            + [f"rejected: {reason}" for _, reason in broker.rejected[:20]],
+            logs=logs,
         )
 
     def _flush_trades(self) -> None:
