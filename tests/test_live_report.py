@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import subprocess
 from datetime import datetime, timezone
+
+import pytest
 
 from backtester.core.engine import Backtester
 from backtester.core.types import ExitReason
@@ -20,6 +23,9 @@ from backtester.metrics import compute
 from backtester.strategies.margin_zones.mz50 import MZ50Strategy
 from test_live import PARENT, backtest, entry_index, make, play, read_state, scenario
 from test_mz50 import bars_for, desk  # noqa: F401  (desk is a fixture)
+
+#: The page checks run its script under node.
+needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 
 #: Tables the report and a backtest must agree on, row for row.
 TABLES = ("trades", "crossings", "signals", "zones", "pivots", "warnings", "chain", "journal")
@@ -235,6 +241,7 @@ class TestLiveLayer:
         pulse = json.loads((report_dir(tmp_path) / "pulse.json").read_text())
         assert "no chart today" in pulse["report_error"]
 
+    @needs_node
     def test_the_page_runs_with_the_live_layer(self, desk, gold, config, tmp_path):
         bars = bars_for(PARENT + [1499, 1499])
         closed = entry_index(desk, gold, config, bars) + 1
@@ -248,6 +255,7 @@ class TestLiveLayer:
         assert "live blocks : 0" not in out.stdout
         assert "live logs   : 0" not in out.stdout
 
+    @needs_node
     def test_the_generic_page_runs_with_the_live_layer(self, gold, config, tmp_path):
         from backtester.strategies.sma_cross import SmaCrossStrategy
         from conftest import series
