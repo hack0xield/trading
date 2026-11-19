@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"\nSaved to {directory}")
 
-        # The Backtest Database and its views, per impl-spec/Claude
+        # The Backtest Database and its views, per impl-spec-old/Claude
         # Specification_ Backtest Data Collection and Reporting.md.
         cases = casebook.write(directory, result, be_threshold=args.be_threshold)
         if cases:

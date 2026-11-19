@@ -6,7 +6,7 @@
 // the page renders blank: no chart, no table, no error anyone sees without
 // opening a console. This runs it headlessly so the suite notices instead.
 //
-// Driven by tests/test_senior25.py::TestChartRenders; also usable by hand:
+// Driven by tests/test_mz50.py::TestChartRenders; also usable by hand:
 //   node tests/render_check.js runs/<dir>/chart.html
 const fs = require("fs"), vm = require("vm");
 const html = fs.readFileSync(process.argv[2], "utf8");
@@ -36,7 +36,9 @@ function node(tag, ns) {
     get lastChild() { return this.children[this.children.length - 1]; },
     get firstChild() { return this.children[0]; },
     appendChild(c) { this.children.push(c); return c; },
-    addEventListener() {}, removeEventListener() {}, focus() {},
+    handlers: {},
+    addEventListener(type, fn) { this.handlers[type] = fn; },
+    removeEventListener() {}, focus() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 900, height: 400 }),
     scrollTo() {}, remove() {},
   };
@@ -59,15 +61,24 @@ const sandbox = {
 try {
   vm.createContext(sandbox);
   vm.runInContext(m[1], sandbox, { filename: "chart.js" });
+  // Hover is where the readout is built; without firing it a throw there
+  // would never be seen, since the page loads fine without ever hovering.
+  const move = byId.scroller && byId.scroller.handlers.pointermove;
+  if (move) move({ clientX: 400, clientY: 200 });
   console.log(`OK: script ran to completion`);
   console.log(`  SVG elements created : ${created.svg}`);
   console.log(`  HTML elements created: ${created.html}`);
   console.log(`  title  : ${byId.title ? byId.title.textContent : "(not set)"}`);
   console.log(`  count  : ${byId.count ? byId.count.textContent : "(not set)"}`);
-  console.log(`  pattern elements drawn: ${created.level}`);
   console.log(`  order elements drawn  : ${created.trade}`);
   console.log(`  legend items: ${byId.legend ? byId.legend.children.length : 0}`);
-  console.log(`  table rows  : ${byId.tbody ? byId.tbody.children.length : (byId.rows ? byId.rows.children.length : "n/a")}`);
+  console.log(`  readout blocks: ${byId.readout ? byId.readout.children.length : 0}`);
+  console.log(`  hover fired: ${move ? "yes" : "no"}`);
+  console.log(`  zone rows   : ${byId.ztbody ? byId.ztbody.children.length : "n/a"}`);
+  console.log(`  pivot rows  : ${byId.ptbody ? byId.ptbody.children.length : "n/a"}`);
+  console.log(`  crossing rows: ${byId.ctbody ? byId.ctbody.children.length : "n/a"}`);
+  console.log(`  live blocks : ${byId.live && !byId.live.hidden ? byId.live.children.length : 0}`);
+  console.log(`  live logs   : ${byId.liveLog ? byId.liveLog.children.length : 0}`);
 } catch (e) {
   console.log(`FAIL: ${e.name}: ${e.message}`);
   console.log((e.stack || "").split("\n").slice(0, 4).join("\n"));

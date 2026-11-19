@@ -5,7 +5,7 @@ Every strategy module is imported here so that decorating a class with
 """
 
 from . import day_open, sma_cross  # noqa: F401  (imported for their @register side effect)
-from .margin_zones import approach25, crossing50  # noqa: F401
+from .margin_zones import mz50  # noqa: F401
 from .registry import available, describe, describe_all, get_strategy, register
 
 __all__ = ["available", "describe", "describe_all", "get_strategy", "register"]

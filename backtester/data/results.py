@@ -35,7 +35,15 @@ def save_result(
 ) -> Path:
     """Write summary.json, trades.csv and equity.csv. Returns the directory."""
     directory = run_directory(root, result, label)
+    write_run(directory, result, metrics, execution)
+    return directory
 
+
+def write_run(
+    directory: Path, result: BacktestResult, metrics: dict, execution: dict | None = None
+) -> None:
+    """A run's files, written into an existing directory."""
+    directory = Path(directory)
     summary = {
         "strategy": result.strategy,
         "symbol": result.symbol,
@@ -62,8 +70,6 @@ def save_result(
     if result.logs:
         with open(directory / "run.log", "w", encoding="utf-8") as fh:
             fh.write("\n".join(result.logs) + "\n")
-
-    return directory
 
 
 def write_rows(path: Path, rows: list[dict]) -> None:

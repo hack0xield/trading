@@ -1,0 +1,822 @@
+<meta charset="utf-8">
+<title>__TITLE__</title>
+
+<style>
+/*__STYLE__*/
+/* zones-specific additions */
+.caution {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-left: 3px solid var(--loss); border-radius: 8px;
+  padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: var(--text-secondary);
+}
+.caution strong { color: var(--text-primary); }
+
+/* The hover readout, docked below the chart rather than floating over it. */
+.readout {
+  display: flex; flex-wrap: wrap; gap: 14px 38px; align-items: flex-start;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1);
+  padding: 13px 16px; margin: 12px 0 24px; min-height: 84px; box-sizing: border-box;
+}
+.readout .ro-group { min-width: 168px; }
+.readout .ro-cap {
+  color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 0.07em;
+  text-transform: uppercase; margin-bottom: 6px;
+}
+.readout .ro-row { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+.readout .ro-key {
+  width: 14px; height: 2px; border-radius: 1px; flex: 0 0 auto; position: relative; top: -3px;
+}
+.readout .ro-val { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.readout .ro-lab { color: var(--text-secondary); font-size: 11px; }
+.readout .ro-idle { color: var(--muted); font-size: 12px; align-self: center; }
+</style>
+
+<div class="viz-root">
+<div class="wrap">
+  <h1 id="title">Margin zones</h1>
+  <p class="sub" id="subtitle"></p>
+  <section class="live" id="live" hidden></section>
+
+  <div id="caution"></div>
+  <h2 class="section" id="statsHead" hidden></h2>
+  <div class="stats" id="stats"></div>
+  <p class="sub" id="statnote"></p>
+
+  <div class="controls">
+    <div class="ctl">
+      <span>Zoom</span>
+      <div class="seg" id="zoom" role="group" aria-label="Zoom level"></div>
+    </div>
+    <div class="ctl">
+      <span>Draw</span>
+      <div class="seg" id="filter" role="group" aria-label="What to draw"></div>
+    </div>
+    <div class="ctl">
+      <span>Rollover</span>
+      <div class="seg" id="roll" role="group" aria-label="Show rollover points"></div>
+    </div>
+    <div class="ctl">
+      <span>Price</span>
+      <div class="seg" id="pricekind" role="group" aria-label="How to draw price"></div>
+    </div>
+    <div class="ctl" id="trades-ctl" hidden>
+      <span>Orders</span>
+      <div class="seg" id="trades" role="group" aria-label="Show orders"></div>
+    </div>
+    <div class="ctl">
+      <span>Price scale</span>
+      <div class="seg" id="scale" role="group" aria-label="Price scale"></div>
+    </div>
+    <div class="ctl"><span id="count"></span></div>
+  </div>
+
+  <div class="chart">
+    <div class="chart-row">
+      <svg class="yaxis" id="yaxis" aria-hidden="true"></svg>
+      <div class="scroller" id="scroller" tabindex="0" role="img"
+           aria-label="Price chart with ZigZag pivots and margin zones">
+        <div class="track" id="track"><svg id="plot"></svg></div>
+      </div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <p class="hint">Scroll sideways to move through time · hover the chart to fill the readout below · arrow keys pan when focused</p>
+  </div>
+
+  <div class="readout" id="readout"></div>
+  <div id="liveLog"></div>
+
+  <details>
+    <summary>Zone versions — every zone the run held, and when it held it</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Kind</th><th>Leg.Ver</th><th>Anchor at</th><th>Anchor</th>
+            <th>Known at</th><th>0% MZ</th><th>50% MZ</th><th>50% Ext-MZ</th><th>100% MZ</th>
+            <th>Pips</th><th>MM used</th><th>Created by</th>
+          </tr>
+        </thead>
+        <tbody id="ztbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <details>
+    <summary>ZigZag pivots — every confirmed pivot and how late it was knowable</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Kind</th><th>Extreme at</th><th>Price</th><th>Confirmed</th><th>Lag</th></tr>
+        </thead>
+        <tbody id="ptbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <details id="crossingsSection">
+    <summary>Rollover crossings — every True/False crossing of the 50% Ext-MZ level</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Zone</th><th>Kind</th><th>Anchor</th>
+            <th>Prev rollover</th><th>This rollover</th>
+            <th>50% Ext-MZ</th><th>Direction</th><th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="ctbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <details id="tradesSection" hidden>
+    <summary>Orders — every BUY and SELL the strategy placed</summary>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Side</th><th>Entry</th><th>Price</th>
+            <th>Exit</th><th>Price</th><th>Bars</th><th>Exit reason</th>
+            <th>Net P&amp;L</th><th>Setup</th>
+          </tr>
+        </thead>
+        <tbody id="ttbody"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <p class="foot" id="foot"></p>
+</div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+/*__LIVE__*/
+
+const PLOT_H = 460, XAXIS_H = 26, YAXIS_W = 74, PAD = 14;
+const ZONES = DATA.zones || [];
+const TRADES = DATA.trades || [];
+const ROLL = DATA.rollover || [];
+const CROSS = DATA.crossings || [];
+const state = {
+  px: 4, filter: "both", scale: "fit",
+  roll: ROLL.length > 0,
+  trades: TRADES.length > 0,
+  price: LIVE && DATA.open ? "candles" : "line",
+};
+const N = DATA.close.length;
+
+const $ = (id) => document.getElementById(id);
+const SVG = "http://www.w3.org/2000/svg";
+const el = (name, attrs) => {
+  const n = document.createElementNS(SVG, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+};
+const DIG = DATA.digits;
+const px_ = (v) => v.toLocaleString("en-US", { minimumFractionDigits: DIG, maximumFractionDigits: DIG });
+const dt = (s) => new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ");
+const day = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+
+let gLo = Infinity, gHi = -Infinity;
+for (let i = 0; i < N; i++) {
+  if (DATA.low[i] < gLo) gLo = DATA.low[i];
+  if (DATA.high[i] > gHi) gHi = DATA.high[i];
+}
+for (const z of ZONES) {
+  gLo = Math.min(gLo, z.mz0, z.mz100, z.e50); gHi = Math.max(gHi, z.mz0, z.mz100, z.e50);
+}
+for (const r of ROLL) { gLo = Math.min(gLo, r.p); gHi = Math.max(gHi, r.p); }
+for (const t of TRADES) { gLo = Math.min(gLo, t.p0, t.p1); gHi = Math.max(gHi, t.p0, t.p1); }
+{ const s = gHi - gLo; gLo -= s * 0.03; gHi += s * 0.03; }
+
+const view = { i0: 0, i1: 0, lo: gLo, hi: gHi, left: 0, w: 0 };
+const y = (p) => PAD + (view.hi - p) / (view.hi - view.lo) * (PLOT_H - 2 * PAD);
+const x = (i) => i * state.px - view.left + state.px / 2;
+
+// Rollover points sit at a break instant, often between bars or inside a
+// weekend gap, so they need an x position by timestamp rather than by index.
+function xAt(t) {
+  if (t <= DATA.times[0]) return x(0);
+  if (t >= DATA.times[N - 1]) return x(N - 1);
+  let lo = 0, hi = N - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (DATA.times[mid] <= t) lo = mid; else hi = mid;
+  }
+  const t0 = DATA.times[lo], t1 = DATA.times[hi];
+  const frac = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+  return x(lo) + (x(hi) - x(lo)) * frac;
+}
+
+const drawZones = () => state.filter === "both" || state.filter === "zones";
+const drawZig = () => state.filter === "both" || state.filter === "pivots";
+
+function measure() {
+  const sc = $("scroller");
+  view.w = sc.clientWidth || 900;
+  view.left = sc.scrollLeft;
+  view.i0 = Math.max(0, Math.floor(view.left / state.px) - 1);
+  view.i1 = Math.min(N - 1, Math.ceil((view.left + view.w) / state.px) + 1);
+
+  if (state.scale === "full") { view.lo = gLo; view.hi = gHi; return; }
+  let lo = Infinity, hi = -Infinity;
+  for (let i = view.i0; i <= view.i1; i++) {
+    if (DATA.low[i] < lo) lo = DATA.low[i];
+    if (DATA.high[i] > hi) hi = DATA.high[i];
+  }
+  // A zone that projects off-screen is the interesting case, so the scale has
+  // to make room for it rather than clip it away.
+  if (drawZones()) {
+    for (const z of ZONES) {
+      if (z.i1 < view.i0 || z.i0 > view.i1) continue;
+      lo = Math.min(lo, z.mz0, z.mz100, z.e50); hi = Math.max(hi, z.mz0, z.mz100, z.e50);
+    }
+  }
+  if (state.trades) {
+    for (const t of TRADES) {
+      if (t.i1 < view.i0 || t.i0 > view.i1) continue;
+      lo = Math.min(lo, t.p0, t.p1); hi = Math.max(hi, t.p0, t.p1);
+    }
+  }
+  for (const v of liveLevels(view.i0, view.i1)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (!isFinite(lo)) { lo = gLo; hi = gHi; }
+  const s = (hi - lo) || 1;
+  view.lo = lo - s * 0.06; view.hi = hi + s * 0.06;
+}
+
+function ticks(min, max, n) {
+  const raw = (max - min) / n;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(min / step) * step; v <= max; v += step) out.push(v);
+  return out;
+}
+
+// ---- header -----------------------------------------------------------
+const trueCount = CROSS.filter((c) => c.cls === "True").length;
+$("title").textContent = DATA.strategy
+  ? `${DATA.symbol} ${DATA.timeframe} — ${DATA.strategy}, ` +
+    `${ZONES.length} zone versions and ${TRADES.length} orders`
+  : `${DATA.symbol} ${DATA.timeframe} — ${ZONES.length} margin zone versions`;
+$("subtitle").innerHTML = "";
+$("subtitle").append(
+  `${day(DATA.times[0])} to ${day(DATA.times[N - 1])} · `,
+  `ZigZag deviation ${DATA.deviation} · margin from ${DATA.contract} `,
+  `(pip value ${DATA.pipValue.toFixed(2)} = PP ${DATA.tickValue} x NP ${DATA.np}) · `,
+);
+const codeEl = document.createElement("code");
+codeEl.textContent = `FMZ = MM/(PP*NP), IMZ = FMZ*${DATA.initialRatio}`;
+$("subtitle").append(codeEl);
+
+if (DATA.caution) {
+  const c = document.createElement("div");
+  c.className = "caution";
+  const b = document.createElement("strong");
+  b.textContent = "Placeholder margin data. ";
+  c.append(b, DATA.caution);
+  $("caution").append(c);
+}
+
+const st = DATA.stats;
+const BT = DATA.backtest || null;
+const money = (v) =>
+  (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+function panel(cls, label, value, tone) {
+  const box = document.createElement("div");
+  box.className = cls;
+  const a = document.createElement("div"); a.className = "label"; a.textContent = label;
+  const b = document.createElement("div"); b.className = "value"; b.textContent = value;
+  if (tone) b.classList.add(tone);
+  box.append(a, b); $("stats").append(box);
+}
+
+if (BT) {
+  panel("hero", "Net profit", money(BT.net_profit || 0),
+        (BT.net_profit || 0) >= 0 ? "up" : "down");
+  for (const [label, value] of [
+    ["Return", ((BT.return_pct || 0) >= 0 ? "+" : "") + (BT.return_pct || 0).toFixed(2) + "%"],
+    ["Orders", `${BT.trades || 0}  (${BT.wins || 0}W / ${BT.losses || 0}L)`],
+    ["Win rate", (BT.win_rate_pct || 0).toFixed(1) + "%"],
+    ["Profit factor", (BT.profit_factor || 0).toFixed(2)],
+    ["Max drawdown", (BT.max_drawdown_pct || 0).toFixed(2) + "%"],
+  ]) panel("tile", label, value);
+  panel("tile", "Zone versions", String(ZONES.length));
+} else {
+  panel("hero", "Zone versions", String(ZONES.length));
+}
+for (const [label, value] of [
+  ["Confirmed pivots", String(DATA.pivots.length)],
+  ["Median swing", DATA.medianSwing.toFixed(2) + "%"],
+  ["Avg FMZ", (st.avg_fmz_pips || 0).toFixed(0) + " pips = " + DATA.fmzPct.toFixed(2) + "%"],
+  ["Margin readings", String(st.distinct_margins || 0)],
+  ["Rollover points", String(ROLL.length)],
+  ["Crossings", `${CROSS.length}  (${trueCount} True / ${CROSS.length - trueCount} False)`],
+]) panel("tile", label, value);
+
+// A zone version lives only until the candidate extends again, so "reached"
+// here is measured over that window and not over the whole leg.
+$("statnote").textContent =
+  `Each zone is anchored on the ZigZag candidate as it stood at the time, and is ` +
+  `superseded the moment the candidate extends. Reached 0% MZ while active: ` +
+  `${(st.reached_mz0_pct || 0).toFixed(0)}%, 100% MZ: ${(st.reached_mz100_pct || 0).toFixed(0)}%. ` +
+  `Median swing ${DATA.medianSwing.toFixed(2)}% vs FMZ ${DATA.fmzPct.toFixed(2)}%.`;
+
+// ---- legend -----------------------------------------------------------
+for (const [color, glyph, text] of [
+  ["var(--price)", "", `${DATA.symbol} price (${DATA.timeframe} close)`],
+  ["var(--text-primary)", "", "ZigZag — confirmed swing pivots, drawn at the extreme they name"],
+  ["var(--muted)", "",
+   "Dashed line back to a pivot = one candidate. Each leg fans outward from the " +
+   "pivot that opened it, in the candidate's own colour"],
+  ["var(--win)", "●", "Low candidate — zone above it: 0% MZ, 100% MZ"],
+  ["var(--loss)", "●", "High candidate — zone below it, same boundaries"],
+  ["var(--muted)", "", "Dotted staircase = the anchor, i.e. the candidate as it moved"],
+  ["var(--muted)", "", "Dashed hairline inside a zone = 50% MZ, its midpoint"],
+  ["var(--muted)", "", "Solid hairline nearer the anchor = 50% Ext-MZ — the signal level"],
+  ...(ROLL.length ? [["var(--text-primary)", "●",
+    "Daily CFD rollover point — last price before the scheduled trading break"]] : []),
+  ...(CROSS.length ? [
+    ["var(--win)", "◎", "True crossing — rollover moved through 50% Ext-MZ toward the zone"],
+    ["var(--loss)", "◎", "False crossing — rollover moved through it away from the zone"],
+  ] : []),
+  ...(TRADES.length ? [
+    ["var(--trade-win)", "▲", "Winning order — entry ● to exit ▲"],
+    ["var(--trade-loss)", "▼", "Losing order — entry ● to exit ▼"],
+  ] : []),
+  ...(DATA.cand ? [["var(--muted)", "○",
+    `Live ${DATA.cand.kind} candidate ${px_(DATA.cand.p)} (${DATA.cand.bars} bars ago)` +
+    (DATA.cand.confirmAt === null ? "" : ` — needs ${px_(DATA.cand.confirmAt)} to confirm`)]] : []),
+]) {
+  const item = document.createElement("div"); item.className = "item";
+  const sw = document.createElement("span"); sw.className = "swatch"; sw.style.background = color;
+  item.append(sw);
+  if (glyph) {
+    const g = document.createElement("span"); g.className = "glyph";
+    g.style.color = color; g.textContent = glyph;
+    item.append(g);
+  }
+  const lab = document.createElement("span"); lab.textContent = text;
+  item.append(lab); $("legend").append(item);
+}
+
+if (TRADES.length) $("trades-ctl").hidden = false;
+
+// ---- controls ---------------------------------------------------------
+function seg(host, options, current, onPick) {
+  host.innerHTML = "";
+  for (const [value, label] of options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(value === current));
+    b.onclick = () => onPick(value);
+    host.append(b);
+  }
+}
+function controls() {
+  seg($("zoom"), [[2, "Far"], [4, "Mid"], [8, "Close"]], state.px, (v) => {
+    const sc = $("scroller");
+    const mid = (sc.scrollLeft + sc.clientWidth / 2) / state.px;
+    state.px = v; layout(); sc.scrollLeft = mid * v - sc.clientWidth / 2; draw();
+  });
+  seg($("filter"),
+      [["both", "Both"], ["zones", "Zones"], ["pivots", "ZigZag"], ["none", "None"]],
+      state.filter, (v) => { state.filter = v; draw(); });
+  seg($("roll"), [[true, "Show"], [false, "Hide"]], state.roll,
+      (v) => { state.roll = v; draw(); });
+  seg($("scale"), [["fit", "Fit visible"], ["full", "Full range"]],
+      state.scale, (v) => { state.scale = v; draw(); });
+  if (TRADES.length) {
+    seg($("trades"), [[true, "Show"], [false, "Hide"]], state.trades,
+        (v) => { state.trades = v; draw(); });
+  }
+  if (DATA.open) {
+    seg($("pricekind"), [["line", "Line"], ["candles", "Candles"]], state.price,
+        (v) => { state.price = v; draw(); });
+  }
+}
+
+// ---- render -----------------------------------------------------------
+function layout() {
+  const H = PLOT_H + XAXIS_H;
+  const track = $("track");
+  track.style.width = (N * state.px) + "px";
+  track.style.height = H + "px";
+  $("plot").setAttribute("height", H);
+  $("yaxis").setAttribute("width", YAXIS_W);
+  $("yaxis").setAttribute("height", H);
+}
+
+function draw() {
+  controls();
+  measure();
+  const W = view.w, a = view.i0, b = view.i1;
+  const plot = $("plot"); plot.setAttribute("width", W); plot.innerHTML = "";
+  const ya = $("yaxis"); ya.innerHTML = "";
+
+  for (const v of ticks(view.lo, view.hi, 6)) {
+    const yy = y(v);
+    if (yy < 6 || yy > PLOT_H - 4) continue;
+    plot.append(el("line", { x1: 0, y1: yy, x2: W, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const lab = el("text", {
+      x: YAXIS_W - 10, y: yy + 4, "text-anchor": "end",
+      fill: "var(--muted)", "font-size": 11, "font-family": "system-ui, sans-serif",
+    });
+    lab.style.fontVariantNumeric = "tabular-nums";
+    lab.textContent = v.toFixed(DIG > 2 ? 4 : 2);
+    ya.append(lab);
+  }
+  ya.append(el("line", { x1: YAXIS_W - 1, y1: 0, x2: YAXIS_W - 1, y2: PLOT_H,
+                         stroke: "var(--axis)", "stroke-width": 1 }));
+
+  // Zones go down first, so price and the ZigZag spine read on top of them.
+  // Each version covers the bars over which it was the active zone, so the
+  // boundaries form a staircase that steps every time the candidate extended.
+  let drawn = 0;
+  if (drawZones()) {
+    for (const z of ZONES) {
+      if (z.i1 < a || z.i0 > b) continue;
+      drawn++;
+      const c = z.dir > 0 ? "var(--win)" : "var(--loss)";
+      const x0 = x(z.i0), x1 = x(z.i1 + 1);
+      const y0 = y(z.mz0), y1 = y(z.mz100);
+      plot.append(el("rect", {
+        x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.max(1, Math.abs(x1 - x0)),
+        height: Math.max(1, Math.abs(y1 - y0)), fill: c, "fill-opacity": 0.14,
+      }));
+      // Near boundary solid, far boundary faint, midpoint dashed between them.
+      plot.append(el("line", { x1: x0, y1: y0, x2: x1, y2: y0,
+                               stroke: c, "stroke-width": 1.5, "stroke-opacity": 0.95 }));
+      plot.append(el("line", { x1: x0, y1: y1, x2: x1, y2: y1,
+                               stroke: c, "stroke-width": 1, "stroke-opacity": 0.6 }));
+      // The band's midpoint, and the signal level outside it nearer the
+      // anchor. The signal level is drawn heavier so it reads at a glance.
+      const yM = y(z.mid), yE = y(z.e50);
+      plot.append(el("line", { x1: x0, y1: yM, x2: x1, y2: yM, stroke: c,
+                               "stroke-width": 1, "stroke-opacity": 0.45,
+                               "stroke-dasharray": "3 3" }));
+      plot.append(el("line", { x1: x0, y1: yE, x2: x1, y2: yE, stroke: c,
+                               "stroke-width": 1.5, "stroke-opacity": 0.9 }));
+      // The anchor itself: the candidate price this version was built on.
+      const yA = y(z.anch);
+      plot.append(el("line", { x1: x0, y1: yA, x2: x1, y2: yA,
+                               stroke: c, "stroke-width": 1, "stroke-opacity": 0.7,
+                               "stroke-dasharray": "1 2" }));
+    }
+  }
+
+  // Price. Candles need room, so at the farthest zoom they fall back to the line.
+  if (state.price === "candles" && DATA.open && state.px >= 4) {
+    // Monochrome: blue and red already mean zone direction. A rising candle
+    // is hollow, a falling one filled.
+    let wicks = "";
+    const bw = Math.max(1, state.px * 0.6);
+    for (let i = a; i <= b; i++) {
+      const xx = x(i).toFixed(1);
+      wicks += `M${xx},${y(DATA.high[i]).toFixed(1)}L${xx},${y(DATA.low[i]).toFixed(1)}`;
+    }
+    plot.append(el("path", { d: wicks, stroke: "var(--price)", "stroke-width": 1 }));
+    for (let i = a; i <= b; i++) {
+      const o = DATA.open[i], c = DATA.close[i];
+      const top = y(Math.max(o, c)), h = Math.max(1, Math.abs(y(o) - y(c)));
+      plot.append(el("rect", {
+        x: x(i) - bw / 2, y: top, width: bw, height: h,
+        fill: c >= o ? "var(--surface-1)" : "var(--price)", stroke: "var(--price)", "stroke-width": 1,
+      }));
+    }
+  } else {
+    let band = "", line = "";
+    for (let i = a; i <= b; i++) band += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.high[i]).toFixed(1);
+    for (let i = b; i >= a; i--) band += "L" + x(i).toFixed(1) + "," + y(DATA.low[i]).toFixed(1);
+    plot.append(el("path", { d: band + "Z", fill: "var(--price)", "fill-opacity": 0.10, stroke: "none" }));
+    for (let i = a; i <= b; i++) line += (i === a ? "M" : "L") + x(i).toFixed(1) + "," + y(DATA.close[i]).toFixed(1);
+    plot.append(el("path", { d: line, fill: "none", stroke: "var(--price)", "stroke-width": 1.5,
+                             "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  }
+
+  // Daily CFD rollover points: an observation, subordinate to price.
+  const tA = DATA.times[a], tB = DATA.times[b];
+  if (state.roll) {
+    for (const r of ROLL) {
+      if (r.t < tA || r.t > tB) continue;
+      plot.append(el("circle", {
+        cx: xAt(r.t), cy: y(r.p), r: 2.5,
+        fill: "var(--text-primary)", "fill-opacity": 0.55,
+      }));
+    }
+  }
+
+  // Orders. Blue and red already mean zone direction, so trades get their own
+  // pair — and the marker shape says win/loss a second time, so colour is
+  // never the only channel carrying it.
+  if (state.trades) {
+    for (const t of TRADES) {
+      if (t.i1 < a || t.i0 > b) continue;
+      const c = t.pnl > 0 ? "var(--trade-win)" : "var(--trade-loss)";
+      const fade = liveFade(t);
+      const x0 = x(t.i0), x1 = x(t.i1), y0 = y(t.p0), y1 = y(t.p1);
+      plot.append(el("line", {
+        x1: x0, y1: y0, x2: x1, y2: y1, stroke: c, "stroke-width": 2,
+        "stroke-linecap": "round", "stroke-opacity": 0.9 * fade,
+      }));
+      plot.append(el("circle", {
+        cx: x0, cy: y0, r: 4, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, opacity: fade,
+      }));
+      const d = t.pnl > 0
+        ? `M${x1},${y1 - 5}L${x1 + 5},${y1 + 4}L${x1 - 5},${y1 + 4}Z`
+        : `M${x1},${y1 + 5}L${x1 + 5},${y1 - 4}L${x1 - 5},${y1 - 4}Z`;
+      plot.append(el("path", {
+        d, fill: c, stroke: "var(--surface-1)", "stroke-width": 2, "stroke-linejoin": "round",
+        opacity: fade,
+      }));
+    }
+  }
+
+  // Crossings: a ring around the second rollover point of the pair.
+  if (state.roll) {
+    for (const c of CROSS) {
+      if (c.t < tA || c.t > tB) continue;
+      const ring = el("circle", {
+        cx: xAt(c.t), cy: y(c.p), r: 5.5, fill: "none",
+        stroke: c.cls === "True" ? "var(--win)" : "var(--loss)", "stroke-width": 1.75,
+        // fill:none leaves only the stroke hit-testable, and a 1.75px ring is
+        // nearly impossible to hover; "all" makes the whole disc hoverable.
+        "pointer-events": "all",
+      });
+      ring.append(el("title", {}));
+      ring.lastChild.textContent =
+        `${c.cls} crossing (${c.dir}) — rollover ${dt(c.prevT)} ${px_(c.prevP)} -> ` +
+        `${c.day} ${px_(c.p)}, 50% Ext-MZ ${px_(c.e50)} of zone ${c.z}`;
+      plot.append(ring);
+    }
+  }
+
+  // ZigZag spine and its pivots, plus the candidate still in progress.
+  if (drawZig()) {
+    // Every candidate a zone was anchored on, joined back to the pivot whose
+    // confirmation opened its leg. Dashed, because a candidate is not a pivot:
+    // the line is redrawn one step further out each time it extends, and the
+    // last one of a leg is the segment that ends up solid. Colour follows the
+    // candidate, so a leg's fan is the opposite colour to the pivot it leaves.
+    for (const z of ZONES) {
+      if (z.pi === null || z.pi === undefined) continue;
+      const p = DATA.pivots[z.pi];
+      if (Math.max(p.i, z.ai) < a || Math.min(p.i, z.ai) > b) continue;
+      plot.append(el("line", {
+        x1: x(p.i), y1: y(p.p), x2: x(z.ai), y2: y(z.anch),
+        stroke: z.dir > 0 ? "var(--win)" : "var(--loss)",
+        "stroke-width": 1, "stroke-opacity": 0.35, "stroke-dasharray": "4 3",
+      }));
+    }
+
+    const near = DATA.pivots.filter((p) => p.i >= a - 400 && p.i <= b + 400);
+    if (near.length > 1) {
+      let d = "";
+      for (let k = 0; k < near.length; k++) {
+        d += (k ? "L" : "M") + x(near[k].i).toFixed(1) + "," + y(near[k].p).toFixed(1);
+      }
+      plot.append(el("path", { d, fill: "none", stroke: "var(--text-primary)", "stroke-width": 2,
+                               "stroke-opacity": 0.75, "stroke-linejoin": "round" }));
+    }
+    for (const p of near) {
+      if (p.i < a || p.i > b) continue;
+      plot.append(el("circle", {
+        cx: x(p.i), cy: y(p.p), r: 4.5,
+        fill: p.kind === "low" ? "var(--win)" : "var(--loss)",
+        stroke: "var(--surface-1)", "stroke-width": 2,
+      }));
+    }
+
+    // The leg still in progress. Dashed and hollow because it is not a pivot:
+    // it can extend further or be replaced.
+    const pv = DATA.cand;
+    if (pv && DATA.pivots.length) {
+      const lastP = DATA.pivots[DATA.pivots.length - 1];
+      if (!(pv.i < a && lastP.i < a) && !(pv.i > b && lastP.i > b)) {
+        plot.append(el("line", {
+          x1: x(lastP.i), y1: y(lastP.p), x2: x(pv.i), y2: y(pv.p),
+          stroke: "var(--text-primary)", "stroke-width": 2, "stroke-opacity": 0.45,
+          "stroke-dasharray": "5 4", "stroke-linecap": "round",
+        }));
+        plot.append(el("circle", {
+          cx: x(pv.i), cy: y(pv.p), r: 4.5, fill: "var(--surface-1)",
+          stroke: pv.kind === "low" ? "var(--win)" : "var(--loss)", "stroke-width": 2,
+        }));
+      }
+    }
+  }
+
+  // X axis.
+  let lastMonth = a > 0 ? new Date(DATA.times[a - 1] * 1000).toISOString().slice(0, 7) : "";
+  for (let i = a; i <= b; i++) {
+    const m = new Date(DATA.times[i] * 1000).toISOString().slice(0, 7);
+    if (m === lastMonth) continue;
+    lastMonth = m;
+    const xx = x(i);
+    plot.append(el("line", { x1: xx, y1: PLOT_H, x2: xx, y2: PLOT_H + 4,
+                             stroke: "var(--axis)", "stroke-width": 1 }));
+    const isYear = m.endsWith("-01");
+    const t = el("text", { x: xx + 4, y: PLOT_H + 17, fill: "var(--muted)",
+                           "font-size": 11, "font-family": "system-ui, sans-serif" });
+    t.textContent = isYear ? m.slice(0, 4) : m.slice(5);
+    if (isYear) t.setAttribute("font-weight", "600");
+    plot.append(t);
+  }
+  plot.append(el("line", { x1: 0, y1: PLOT_H, x2: W, y2: PLOT_H, stroke: "var(--axis)", "stroke-width": 1 }));
+
+  liveOverlay(plot, a, b, W);
+
+  crosshair = el("line", { x1: 0, y1: 0, x2: 0, y2: PLOT_H, stroke: "var(--axis)",
+                           "stroke-width": 1, visibility: "hidden" });
+  plot.append(crosshair);
+
+  $("count").textContent =
+    `${drawn} zone version(s) on screen of ${ZONES.length}`;
+}
+
+// ---- tables -----------------------------------------------------------
+function fill(tbody, rows) {
+  const tb = $(tbody);
+  tb.innerHTML = "";
+  for (const cells of rows) {
+    const tr = document.createElement("tr");
+    for (const [text, cls] of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (cls) td.className = cls;
+      tr.append(td);
+    }
+    tb.append(tr);
+  }
+}
+
+fill("ztbody", ZONES.map((z, k) => [
+  [String(k + 1), ""],
+  [z.kind, z.kind === "low" ? "up" : "down"],
+  [`${z.leg}.${z.ver}`, ""],
+  [dt(z.at), ""],
+  [px_(z.anch), ""],
+  [dt(z.kt), ""],
+  [px_(z.mz0), ""],
+  [px_(z.mid), ""],
+  [px_(z.e50), ""],
+  [px_(z.mz100), ""],
+  [z.pips.toFixed(0), ""],
+  [z.mm.toLocaleString("en-US"), ""],
+  [z.ev.replace(/_/g, " "), ""],
+]));
+
+fill("ptbody", DATA.pivots.map((p, k) => [
+  [String(k + 1), ""],
+  [p.kind, p.kind === "low" ? "up" : "down"],
+  [dt(p.t), ""],
+  [px_(p.p), ""],
+  [dt(DATA.times[p.ci]), ""],
+  [`+${p.ci - p.i} bars`, ""],
+]));
+
+$("crossingsSection").hidden = CROSS.length === 0;
+fill("ctbody", CROSS.map((c, k) => [
+  [String(k + 1), ""],
+  [String(c.z), ""],
+  [c.kind, c.kind === "low" ? "up" : "down"],
+  [px_(c.anch), ""],
+  [`${c.prevDay}  ${px_(c.prevP)}`, ""],
+  [`${c.day}  ${px_(c.p)}`, ""],
+  [px_(c.e50), ""],
+  [c.dir, ""],
+  [c.cls, c.cls === "True" ? "up" : "down"],
+]));
+
+if (TRADES.length) {
+  $("tradesSection").hidden = false;
+  fill("ttbody", TRADES.map((o) => [
+    [String(o.id), ""],
+    [o.side, o.side === "BUY" ? "up" : "down"],
+    [dt(o.t0), ""],
+    [px_(o.p0), ""],
+    [dt(o.t1), ""],
+    [px_(o.p1), ""],
+    [String(o.bars), ""],
+    [o.reason.replace(/_/g, " ").toLowerCase(), ""],
+    [(o.pnl >= 0 ? "+" : "") + o.pnl.toFixed(2), o.pnl > 0 ? "up" : "down"],
+    [o.tag || "", ""],
+  ]));
+}
+
+let queued = false;
+function schedule() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(); });
+}
+$("scroller").addEventListener("scroll", schedule, { passive: true });
+window.addEventListener("resize", schedule);
+
+// ---- readout ----------------------------------------------------------
+// Docked below the chart and updated on hover. It holds the last reading
+// after the pointer leaves, so a number can be read without keeping the mouse
+// on the bar it came from.
+let crosshair = null;
+
+function group(caption, rows) {
+  const g = document.createElement("div"); g.className = "ro-group";
+  const c = document.createElement("div"); c.className = "ro-cap"; c.textContent = caption;
+  g.append(c);
+  for (const [color, value, label] of rows) {
+    const r = document.createElement("div"); r.className = "ro-row";
+    if (color) {
+      const k = document.createElement("span");
+      k.className = "ro-key"; k.style.background = color;
+      r.append(k);
+    }
+    const v = document.createElement("span"); v.className = "ro-val"; v.textContent = value;
+    const l = document.createElement("span"); l.className = "ro-lab"; l.textContent = label;
+    r.append(v, l);
+    g.append(r);
+  }
+  return g;
+}
+
+function readoutIdle() {
+  const box = $("readout");
+  box.innerHTML = "";
+  const p = document.createElement("div");
+  p.className = "ro-idle";
+  p.textContent = "Hover the chart to read the bar, the zones covering it, and any crossing on its day.";
+  box.append(p);
+}
+
+function readout(i) {
+  const box = $("readout");
+  box.innerHTML = "";
+  box.append(group("Bar", [
+    [null, dt(DATA.times[i]), "time"],
+    ["var(--price)", px_(DATA.close[i]), "close"],
+    [null, `${px_(DATA.low[i])} – ${px_(DATA.high[i])}`, "low – high"],
+  ]));
+
+  for (const z of ZONES.filter((z) => i >= z.i0 && i <= z.i1).slice(0, 2)) {
+    const c = z.dir > 0 ? "var(--win)" : "var(--loss)";
+    box.append(group(`Zone ${z.id}  ·  ${z.leg}.${z.ver}`, [
+      [c, px_(z.anch), `${z.kind} candidate, ${day(z.at)}`],
+      [null, `${px_(z.mz0)} → ${px_(z.mz100)}`, `0%→100% MZ (${z.pips.toFixed(0)} pips)`],
+      [null, px_(z.mid), "50% MZ (midpoint)"],
+      [null, px_(z.e50), "50% Ext-MZ level"],
+      [null, z.mm.toLocaleString("en-US"), `MM as of ${z.asOf}`],
+    ]));
+  }
+
+  // Match a crossing by calendar day: it sits at a rollover instant, often
+  // between bars, so the exact timestamp would rarely line up.
+  const cross = CROSS.find((c) => c.day === day(DATA.times[i]));
+  if (cross) {
+    box.append(group("Rollover crossing", [
+      [cross.cls === "True" ? "var(--win)" : "var(--loss)",
+       `${cross.cls} (${cross.dir})`, `zone ${cross.z}`],
+      [null, px_(cross.e50), "50% Ext-MZ level"],
+      [null, `${px_(cross.prevP)} → ${px_(cross.p)}`, `${cross.prevDay} → ${cross.day}`],
+    ]));
+  }
+
+  const order = TRADES.find((t) => i >= t.i0 && i <= t.i1);
+  if (order) {
+    box.append(group(`Order ${order.id}`, [
+      [order.pnl > 0 ? "var(--trade-win)" : "var(--trade-loss)", order.side, "side"],
+      [null, `${px_(order.p0)} → ${px_(order.p1)}`, `${dt(order.t0)} → ${dt(order.t1)}`],
+      [null, (order.pnl >= 0 ? "+" : "") + order.pnl.toFixed(2),
+       order.reason.replace(/_/g, " ").toLowerCase()],
+    ]));
+  }
+}
+
+$("scroller").addEventListener("pointermove", (ev) => {
+  const box = $("plot").getBoundingClientRect();
+  const i = Math.max(0, Math.min(N - 1,
+    Math.round((ev.clientX - box.left + view.left - state.px / 2) / state.px)));
+  if (crosshair) {
+    crosshair.setAttribute("x1", x(i)); crosshair.setAttribute("x2", x(i));
+    crosshair.setAttribute("visibility", "visible");
+  }
+  readout(i);
+});
+$("scroller").addEventListener("pointerleave", () => {
+  if (crosshair) crosshair.setAttribute("visibility", "hidden");
+});
+$("scroller").addEventListener("keydown", (ev) => {
+  const step = ev.shiftKey ? 800 : 120;
+  if (ev.key === "ArrowRight") { $("scroller").scrollLeft += step; ev.preventDefault(); }
+  if (ev.key === "ArrowLeft") { $("scroller").scrollLeft -= step; ev.preventDefault(); }
+});
+
+layout();
+draw();
+readoutIdle();
+liveInit();
+$("foot").textContent =
+  `${N.toLocaleString()} ${DATA.timeframe} bars · ${ZONES.length} zone versions · ` +
+  `generated ${DATA.generated}`;
+</script>

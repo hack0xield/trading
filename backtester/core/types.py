@@ -72,7 +72,13 @@ class Bar:
 
 @dataclass(slots=True)
 class OrderRequest:
-    """A market order queued by a strategy, filled on the next bar's open.
+    """An order queued by a strategy.
+
+    Without `limit_price` it is a market order and fills at the next price the
+    engine offers. With one it is a limit order: it rests until the market
+    trades through its level and fills there, never worse. `cancel_price` names
+    a level on the far side that voids it instead — a bar reaching both is
+    resolved as the cancellation, since its intrabar path is unknown.
 
     Stop and target can be given either as absolute prices or as percentages of
     the fill price. Percentages are resolved by the broker at fill time, which
@@ -88,6 +94,8 @@ class OrderRequest:
     tp_pct: float | None = None
     tag: str = ""
     created_at: datetime | None = None
+    limit_price: float | None = None
+    cancel_price: float | None = None
 
 
 @dataclass(slots=True)

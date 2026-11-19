@@ -1,20 +1,14 @@
-"""Margin zones — everything specific to the strategy family.
+"""Margin zones: contract margin turned into price levels, and what watches them.
 
-Contract specifications, the dated CME margin log, the [FMZ, IMZ] envelope
-projection, and the report that draws them. Anything usable without knowing
-what a margin zone is belongs elsewhere: bars come from `data/`, swing pivots
-from `indicators/`.
+`margins.py` turns a CME maintenance margin into FMZ/IMZ distances, `zones.py`
+anchors those on the ZigZag candidate and versions them as it moves,
+`rollover.py` samples the daily CFD break, `crossing.py` pairs those samples
+against a zone's E50 level, and `report.py` draws the result.
 
-Both execution strategies and analysis-only tools for margin zones live here.
-If a second classification of margin-zone strategy appears, split then.
-
-See `impl-spec/MarginZones_revised.md` for the specification this implements.
+See `impl-spec-old/MarginZones_revised.md` for the specification this implements.
 """
 
-from .approach25 import Senior25Params, Senior25Strategy, tag_for
-from .crossing import CrossingSignal, CrossingTracker
-from .crossing50 import Crossing50Params, Crossing50Strategy
-from .envelopes import Envelope, build_envelopes, envelope_from, margin_coverage, summarise
+from .crossing import DEFAULT_MAX_GAP_DAYS, Crossing, CrossingTracker
 from .margins import (
     CONTRACT_DIR,
     DEFAULT_INITIAL_RATIO,
@@ -29,31 +23,26 @@ from .margins import (
     save_spec,
     validate_observation,
 )
-from .report import build_payload, render_chart, report_name, write_report
-from .rollover import (
-    RolloverCrossing, RolloverPoint, RolloverTracker, envelope_at,
-    rollover_crossings, rollover_points,
-)
-from .senior import (
-    LEVEL_FRACTION,
-    TOLERANCE_FRACTION,
-    ApproachEvent,
-    SeniorApproachTracker,
-    SeniorExtremum,
-    first_approach,
-    senior_extremums,
+from .mz50 import CLOSE_ON_CANDIDATE_UPDATE, KEEP_OPEN, MZ50Params, MZ50Strategy
+from .report import build_payload, read_metrics, read_trades, render_chart, write_chart
+from .rollover import RolloverPoint, RolloverTracker
+from .zones import (
+    INITIAL,
+    STRICT_EXTENSION,
+    ZONE_INPUT_CHANGE,
+    ZoneTracker,
+    ZoneVersion,
+    summarise,
+    zone_spans,
 )
 
 __all__ = [
-    "CONTRACT_DIR", "ContractSpec", "DEFAULT_INITIAL_RATIO", "Envelope",
-    "LEVEL_FRACTION", "MARGIN_LOG", "MarginLog",
-    "MarginObservation", "MarginZones", "RolloverCrossing", "RolloverPoint",
-    "ApproachEvent", "Crossing50Params", "Crossing50Strategy", "CrossingSignal",
-    "CrossingTracker", "RolloverTracker", "Senior25Params", "Senior25Strategy", "SeniorApproachTracker",
-    "SeniorExtremum", "TOLERANCE_FRACTION",
-    "build_envelopes", "build_payload", "compute_zones", "envelope_at",
-    "envelope_from",
-    "first_approach", "list_specs", "load_spec", "margin_coverage", "render_chart",
-    "report_name", "rollover_crossings", "rollover_points", "save_spec",
-    "senior_extremums", "summarise", "tag_for", "validate_observation", "write_report",
+    "CLOSE_ON_CANDIDATE_UPDATE", "CONTRACT_DIR", "ContractSpec", "Crossing",
+    "CrossingTracker", "DEFAULT_INITIAL_RATIO", "DEFAULT_MAX_GAP_DAYS",
+    "INITIAL", "KEEP_OPEN", "MARGIN_LOG", "MZ50Params", "MZ50Strategy",
+    "MarginLog", "MarginObservation", "MarginZones", "RolloverPoint",
+    "RolloverTracker", "STRICT_EXTENSION", "ZONE_INPUT_CHANGE",
+    "ZoneTracker", "ZoneVersion", "build_payload", "compute_zones", "list_specs",
+    "load_spec", "read_metrics", "read_trades", "render_chart",
+    "save_spec", "summarise", "validate_observation", "write_chart", "zone_spans",
 ]

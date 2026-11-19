@@ -155,6 +155,8 @@ class Context:
         sl_pct: float | None = None,
         tp_pct: float | None = None,
         tag: str = "",
+        limit: float | None = None,
+        cancel_at: float | None = None,
     ) -> None:
         self.broker.submit(
             OrderRequest(
@@ -166,8 +168,14 @@ class Context:
                 tp_pct=tp_pct,
                 tag=tag,
                 created_at=self.now,
+                limit_price=limit,
+                cancel_price=cancel_at,
             )
         )
+
+    def cancel_pending(self) -> int:
+        """Drop every order queued but not yet filled."""
+        return self.broker.cancel_pending()
 
     def close(self, position: Position | None = None, reason: ExitReason = ExitReason.STRATEGY):
         """Close one position (default: the oldest) at the current price."""
@@ -181,13 +189,7 @@ class Context:
 
     def modify(self, position: Position, sl: float | None = None, tp: float | None = None) -> None:
         """Move a stop or target — the hook a trailing stop hangs off."""
-        if sl is not None:
-            position.sl = self.instrument.round_price(sl)
-        if tp is not None:
-            position.tp = self.instrument.round_price(tp)
-
-    def cancel_pending(self) -> None:
-        self.broker.pending.clear()
+        self.broker.modify(position, sl, tp)
 
     # -------------------------------------------------------------------- log
 
